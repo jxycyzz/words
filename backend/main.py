@@ -217,7 +217,8 @@ def create_app(data_dir=None, testing=False, services=None):
 
     @app.get('/api/health')
     async def health():
-        return {'status':'ok','version':VERSION,'build_id':build_id(),'scope':'local-single-learner'}
+        scope = 'single-learner' if public_mode else 'local-single-learner'
+        return {'status':'ok','version':VERSION,'build_id':build_id(),'scope':scope}
 
     @app.get('/api/bootstrap')
     async def bootstrap(request: Request):

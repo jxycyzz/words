@@ -238,6 +238,7 @@ def test_public_deployment_host_and_secure_cookie(tmp_path,monkeypatch):
     with TestClient(create_app(tmp_path,testing=True),base_url='https://words.rfdsx.online') as public_client:
         response=public_client.get('/api/health')
         assert response.status_code==200
+        assert response.json()['scope']=='single-learner'
         assert 'Secure' in response.headers['set-cookie']
         assert public_client.get('/api/health',headers={'Host':'attacker.example'}).status_code==400
 
