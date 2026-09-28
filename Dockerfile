@@ -15,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY requirements.production.txt ./
-RUN pip install --no-cache-dir -r requirements.production.txt \
+RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -r requirements.production.txt \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin wordlearner \
     && mkdir -p /app/data \
     && chown -R wordlearner:wordlearner /app/data
