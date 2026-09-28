@@ -38,4 +38,21 @@ docker compose -f docker-compose.prod.yml ps
 
 更新前使用 SQLite backup API 或应用自己的 `data/backups` 快照。不要直接复制正在写入的 WAL 数据库文件，也不要把正式数据库提交到 Git。
 
+## 导入桌面数据库
+
+先构建包含迁移工具的新镜像并停止应用，再把桌面 `words.sqlite3` 以只读方式挂载：
+
+```bash
+docker compose -f docker-compose.prod.yml stop words
+docker run --rm --network none \
+  -v /opt/words/data:/app/data \
+  -v /tmp/desktop-words.sqlite3:/source.sqlite3:ro \
+  words-words:latest python -m backend.desktop_import \
+  /source.sqlite3 /app/data/wordlearner-web.sqlite3 \
+  --archive-dir /app/data/imports
+docker compose -f docker-compose.prod.yml up -d words
+```
+
+工具使用 SQLite backup API 创建迁移前备份和单机库归档，校验完整性、记录两个文件的 SHA-256，并在一个事务内合并。导入历史邮件会标记为 `desktop_*`，不会进入发送队列。不要在应用运行时执行迁移。
+
 证书续期脚本 `deploy/renew-cert.sh` 使用服务器现有的 ACME webroot 和证书目录。可由 root cron 每周执行；每次续期后会先检查入口 Nginx 配置，再平滑重载。

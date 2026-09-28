@@ -76,6 +76,16 @@ class Store:
                 id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, close_number INTEGER NOT NULL,
                 day TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL, UNIQUE(session_id,close_number));
+            CREATE TABLE IF NOT EXISTS migration_imports(
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, source_label TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL, source_bytes INTEGER NOT NULL,
+                archive_path TEXT NOT NULL, archive_sha256 TEXT NOT NULL,
+                imported_at TEXT NOT NULL, summary TEXT NOT NULL,
+                UNIQUE(kind,source_label), UNIQUE(source_sha256));
+            CREATE TABLE IF NOT EXISTS migration_word_map(
+                import_id INTEGER NOT NULL REFERENCES migration_imports(id),
+                source_word_id INTEGER NOT NULL, target_word_id INTEGER NOT NULL REFERENCES words(id),
+                PRIMARY KEY(import_id,source_word_id));
         ''')
         additions = {'settlement_events':{'attempts':'INTEGER NOT NULL DEFAULT 0','last_error':"TEXT NOT NULL DEFAULT ''",'next_attempt':'REAL NOT NULL DEFAULT 0','sent_at':"TEXT NOT NULL DEFAULT ''"},
                      'ai_cache':{'word_id':'INTEGER','kind':"TEXT NOT NULL DEFAULT ''"}}
@@ -229,7 +239,8 @@ class Store:
         daily = self.daily(day)
         if daily is None:
             return 0.0
-        return round(float(daily['policy']['perfect_reward_money']) * min(max(points,0),400) / 400, 2)
+        ceiling = max(int(daily['policy'].get('reward_point_ceiling',400) or 400),1)
+        return round(float(daily['policy']['perfect_reward_money']) * min(max(points,0),ceiling) / ceiling, 2)
 
     def summary(self):
         total = self.conn.execute('SELECT coalesce(sum(points),0) FROM score_events').fetchone()[0]
@@ -298,7 +309,9 @@ class Store:
             payload = json.loads(rows[0]['payload'])
             number = payload.get('reward_slot',payload['state']['current_round'])
             preview = max(payload['preview_points']-rounds.get(number,{}).get('reward_points',0),0)
-        return min(saved+preview,400),saved
+        daily = self.daily(day)
+        ceiling = max(int((daily or {}).get('policy',{}).get('reward_point_ceiling',400) or 400),1)
+        return min(saved+preview,ceiling),saved
 
     def report(self, start, end):
         history = self.rows('SELECT * FROM review_history WHERE day BETWEEN ? AND ? ORDER BY id DESC',(start,end))

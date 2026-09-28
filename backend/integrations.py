@@ -96,6 +96,14 @@ class Integrations:
         cached = store.conn.execute('SELECT content FROM ai_cache WHERE cache_key=?',(key,)).fetchone()
         if cached:
             return {'content':cached[0],'cached':True}
+        if task in ('note','entry') and word_id:
+            legacy=store.conn.execute('''SELECT content FROM ai_cache WHERE word_id=? AND kind=?
+                ORDER BY created_at DESC,rowid DESC LIMIT 1''',(word_id,'desktop/'+task)).fetchone()
+            if legacy:
+                with store.conn:
+                    store.conn.execute('INSERT OR REPLACE INTO ai_cache(cache_key,content,created_at,word_id,kind) VALUES(?,?,?,?,?)',
+                                       (key,legacy[0],timestamp(),word_id,task))
+                return {'content':legacy[0],'cached':True}
         async with self.active_ai:
             cached = store.conn.execute('SELECT content FROM ai_cache WHERE cache_key=?',(key,)).fetchone()
             if cached: return {'content':cached[0],'cached':True}
