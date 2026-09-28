@@ -1,5 +1,7 @@
 import json
+import io
 import time
+import wave
 from datetime import date, timedelta
 
 import pytest
@@ -292,6 +294,67 @@ def test_game_session_owner_and_input_contract(client):
     assert client.get(f'/api/games/{game_id}').status_code==404
     takeover=client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]})
     assert takeover.status_code==200 and takeover.json()['preparing'] is True
+
+
+def test_voice_api_returns_server_transcript_and_capture_size(client):
+    client.app.state.services=FakeServices()
+    client.app.state.jobs.services=client.app.state.services
+    saved=api_word(client,'voiceword')
+    created=client.post('/api/games',json={'mode':'review','word_ids':[saved['id']]}).json()
+    for _ in range(100):
+        job=client.get(f"/api/jobs/{created['job_id']}").json()
+        if job['status'] in ('completed','failed'): break
+        time.sleep(.02)
+    assert job['status']=='completed',job
+    stream=io.BytesIO()
+    with wave.open(stream,'wb') as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b'\0\0'*1601)
+    body=stream.getvalue()
+
+    game_id=job['result']['id']
+    with client.websocket_connect(f'/api/games/{game_id}/socket',headers={'Origin':'http://testserver'}) as socket:
+        for _ in range(100):
+            message=socket.receive_json()
+            if message.get('type')=='state' and message['state']['active']: break
+        assert message.get('type')=='state' and message['state']['active'],message
+        socket.send_json({'seq':1,'type':'voice_start'})
+        for _ in range(100):
+            message=socket.receive_json()
+            if message.get('type') in ('ack','error'): break
+        assert message.get('type')=='ack',message
+        state=client.get(f'/api/games/{game_id}').json()
+        response=client.post(
+            f'/api/games/{game_id}/voice',
+            content=body,
+            headers={'Content-Type':'audio/wav','X-Voice-Ticket':state['voice_ticket']},
+        )
+
+    assert response.status_code==200,response.text
+    result=response.json()
+    assert result['transcript']=='voiceword'
+    assert result['normalized_transcript']=='voiceword'
+    assert result['recognized'] is True
+    assert result['audio_bytes']==len(body)
+    assert result['matched'] is True
+    assert result['state']['locked']
+    assert result['message']=='已锁定：猫'
+
+
+def test_debug_voice_diagnostic_never_locks_or_changes_results(store):
+    session,clock=game(store,'debug')
+    before=(session.state.score,len(store.rows('SELECT * FROM review_history')))
+    session.command({'seq':1,'type':'voice_start'})
+    ticket=session.voice_ticket
+
+    session.finish_voice_diagnostic(ticket,'voiceword')
+
+    assert session.state.voice_locked_runtime_id is None
+    assert session.pause_kind is None
+    assert (session.state.score,len(store.rows('SELECT * FROM review_history')))==before
+    assert session.message=='麦克风采音正常；免麦克风模式不会锁定单词'
 
 
 def test_latest_page_claim_revokes_old_socket_without_changing_results(client):

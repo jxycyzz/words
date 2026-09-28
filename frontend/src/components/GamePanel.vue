@@ -10,6 +10,8 @@ const state = ref<GameView | null>(null), canvas = ref<HTMLCanvasElement>(), sta
 const notice = ref(''), tooltip = ref('')
 let noticeTimer = 0, lastNotice = '', layout: WordLayout[] = [], width = 980, height = 630
 const connected = ref(false), error = ref(''), recording = ref(false), processing = ref(false)
+const voiceTranscript = ref(''), voiceStatus = ref('尚未识别；按住麦克风按钮开始测试')
+const voiceMatched = ref<boolean | null>(null), voiceAudioBytes = ref(0)
 let socket: WebSocket | null = null, heartbeat = 0, animation = 0, lastSpoken = '', stopped = false
 let sequence = 0, inflight: Record<string, any> | null = null, queue: Record<string, any>[] = []
 let recorder: Recorder | null = null, voiceHeld = false, recordTimer = 0, closing = false
@@ -74,7 +76,13 @@ function cancelRecording() {
 }
 async function beginVoice() {
   if (recording.value || processing.value || state.value?.pause || !connected.value) return
-  if (!props.asr) { error.value = '语音识别尚未配置；请先配置语音服务后使用一键复习'; return }
+  voiceTranscript.value = ''; voiceAudioBytes.value = 0; voiceMatched.value = null
+  if (!props.asr) {
+    voiceStatus.value = '语音识别服务未配置'
+    error.value = '语音识别尚未配置；请先配置语音服务后使用一键复习'
+    return
+  }
+  voiceStatus.value = '正在打开麦克风…'
   voiceHeld = true; error.value = ''; recorder = new Recorder()
   const current = recorder
   command({ type: 'voice_start' })
@@ -82,24 +90,37 @@ async function beginVoice() {
     await current.start()
     if (!voiceHeld || recorder !== current) { current.dispose(); if (connected.value) command({ type: 'voice_cancel' }); return }
     recording.value = true
+    voiceStatus.value = '正在采集声音，请朗读屏幕上的英文单词'
     recordTimer = window.setTimeout(endVoice, 14500)
-  } catch { cancelRecording(); if (connected.value) command({ type: 'voice_cancel' }); error.value = '无法使用麦克风，请检查浏览器录音权限及输入设备' }
+  } catch {
+    cancelRecording(); if (connected.value) command({ type: 'voice_cancel' })
+    voiceStatus.value = '麦克风未采集到音频：请检查浏览器录音权限及输入设备'
+    error.value = '无法使用麦克风，请检查浏览器录音权限及输入设备'
+  }
 }
 async function endVoice() {
   voiceHeld = false; clearTimeout(recordTimer)
   if (!recording.value || !recorder) { recorder?.dispose(); recorder = null; return }
   recording.value = false; processing.value = true
   const audio = recorder.stop(); recorder = null
+  voiceAudioBytes.value = audio.byteLength
+  voiceStatus.value = audio.byteLength ? '音频已采集，正在识别…' : '没有采集到音频，请检查麦克风'
   // Wait for the server-generated recording ticket, never submit a transcript from the browser.
   for (let i = 0; i < 30 && !state.value?.voice_ticket && connected.value; i++) await new Promise(r => setTimeout(r, 30))
   try {
     const ticket = state.value?.voice_ticket
     if (!ticket) throw new Error('录音未开始，请等待单词出现后再试')
-    const result = await api(`/games/${props.id}/voice`, { method: 'POST', body: audio,
+    const result = await api<{ transcript: string; normalized_transcript: string; recognized: boolean; matched: boolean; audio_bytes: number; message: string; state: GameView }>(`/games/${props.id}/voice`, { method: 'POST', body: audio,
       headers: { 'Content-Type': 'audio/wav', 'X-Voice-Ticket': ticket } })
+    voiceTranscript.value = result.transcript.trim() || '（未识别到文字）'
+    voiceAudioBytes.value = result.audio_bytes
+    voiceMatched.value = result.state.voice_required ? result.matched : result.recognized
+    voiceStatus.value = result.message
     if (!stopped && result.state && result.state.last_seq >= (state.value?.last_seq || 0)) state.value = result.state
   } catch (e) {
-    error.value = (e as Error).message
+    const message = (e as Error).message
+    voiceTranscript.value ||= '（识别服务未返回文字）'
+    voiceMatched.value = false; voiceStatus.value = `识别失败：${message}`; error.value = message
     if (connected.value) command({ type: 'voice_cancel' })
   } finally { processing.value = false; canvas.value?.focus() }
 }
@@ -229,12 +250,23 @@ onUnmounted(() => {
     <div class="game-controls">
       <label>速度 <select :value="state?.speed" :disabled="!connected" @change="command({ type: 'speed', value: Number(($event.target as HTMLSelectElement).value) })"><option value="0.2">低</option><option value="0.5">中</option><option value="0.7">高</option></select></label>
       <span class="muted speed-detail" v-if="state">{{ ({'0.2':'低','0.5':'中','0.7':'高'} as Record<string,string>)[String(state.speed)] }} {{ state.speed.toFixed(2) }}x（{{ isReviewMode(state.mode) ? '一键复习' : '固定档位' }}，约 {{ state.spawn_interval.toFixed(1) }}s/词）</span>
-      <button v-if="state?.voice_required" class="voice-button" :disabled="!connected || processing" @pointerdown.prevent="beginVoice" @pointerup="endVoice" @pointerleave="voiceHeld && endVoice()">{{ recording ? '录音中 · 松开识别' : processing ? '识别中…' : '按住读词（空格）' }}</button>
-      <span v-else-if="state?.mode === 'debug'" class="muted">免麦克风：直接输入，不限轮并按正式复习结算</span>
+      <button v-if="isReviewMode(state?.mode)" class="voice-button" :disabled="!connected || processing" @pointerdown.prevent="beginVoice" @pointerup="endVoice" @pointerleave="voiceHeld && endVoice()">{{ recording ? '录音中 · 松开识别' : processing ? '识别中…' : state?.voice_required ? '按住读词（空格）' : '按住测试麦克风' }}</button>
+      <span v-if="state?.mode === 'debug'" class="muted">直接输入；麦克风测试只显示结果，不锁定单词</span>
       <div class="spacer" />
       <button v-if="!connected" class="primary" @click="connect">恢复连接</button>
       <template v-else-if="state?.status === 'running'"><button @click="command({ type: 'restart' })">重新开始</button><button @click="command({ type: 'retry' })">重试本轮</button></template>
       <button @click="close">保存并返回</button>
+    </div>
+    <div v-if="isReviewMode(state?.mode)" class="voice-transcript" role="status" aria-live="polite" data-testid="voice-transcript">
+      <span class="voice-transcript-label">
+        <i :class="{ active: recording || processing, success: voiceMatched === true, warning: voiceMatched === false }" />
+        麦克风识别
+      </span>
+      <template>
+        <strong>{{ voiceTranscript || '（等待朗读）' }}</strong>
+        <span class="voice-transcript-status">{{ voiceStatus }}</span>
+        <small v-if="voiceAudioBytes">已上传 {{ (voiceAudioBytes / 1024).toFixed(1) }} KB 音频</small>
+      </template>
     </div>
   </section>
 </template>

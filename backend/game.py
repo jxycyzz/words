@@ -295,10 +295,10 @@ class GameSession:
             if self.pause_kind=='hint':
                 self.end_pause()
         elif kind=='voice_start':
-            if not self.voice_required or not self.state.game_active:
+            if not self.review or not self.state.game_active:
                 raise ValueError('当前不能开始语音锁定')
-            self.voice_candidates = self.state.capture_voice_candidates(BASELINE)
-            if not self.voice_candidates:
+            self.voice_candidates = self.state.capture_voice_candidates(BASELINE) if self.voice_required else ()
+            if self.voice_required and not self.voice_candidates:
                 raise ValueError('请等待单词出现')
             self.pause_kind, self.pause_at = 'voice', self.clock()
             self.voice_ticket = secrets.token_urlsafe(24)
@@ -340,6 +340,13 @@ class GameSession:
         target = self.state.lock_voice_target(transcript,BASELINE,self.voice_candidates)
         self.message = f'已锁定：{target.prompt}' if target else self.state.voice_match_message
         self.store.log_operation('voice_matched',self.message,session_id=self.id,matched=bool(target))
+        self.end_pause()
+        self.save()
+
+    def finish_voice_diagnostic(self, ticket, transcript):
+        if self.pause_kind!='voice' or ticket!=self.voice_ticket or self.clock()-self.pause_at>=30:
+            raise ValueError('这次录音已失效，请重新录音')
+        self.message = '麦克风采音正常；免麦克风模式不会锁定单词' if transcript.strip() else '没有识别到有效读音，请检查麦克风后重试'
         self.end_pause()
         self.save()
 

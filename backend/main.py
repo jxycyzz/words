@@ -489,16 +489,28 @@ def create_app(data_dir=None, testing=False, services=None):
                 raise HTTPException(413,'录音过长')
             chunks.append(chunk)
         try:
-            text = await app.state.services.transcribe(b''.join(chunks))
+            text = str(await app.state.services.transcribe(b''.join(chunks)) or '')
             with game.atomic():
-                game.apply_voice(ticket,text)
+                if game.voice_required:
+                    game.apply_voice(ticket,text)
+                else:
+                    game.finish_voice_diagnostic(ticket,text)
         except ValueError:
             if ticket==game.voice_ticket:
                 with game.atomic():
                     game.end_pause()
                     game.save()
             raise
-        return {'message':game.message,'state':game.view()}
+        details = game.state.voice_match_details if game.voice_required else {}
+        return {
+            'transcript': text,
+            'normalized_transcript': details.get('transcript',text.strip().casefold()),
+            'recognized': bool(text.strip()),
+            'matched': bool(game.state.voice_locked_runtime_id),
+            'audio_bytes': size,
+            'message': game.message,
+            'state': game.view(),
+        }
 
     @app.websocket('/api/games/{game_id}/socket')
     async def game_socket(ws: WebSocket,game_id: str):
