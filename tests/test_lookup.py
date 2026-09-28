@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -68,3 +69,17 @@ def test_network_failure_and_partial_result(monkeypatch,tmp_path):
     mock_client(monkeypatch,lambda request:httpx.Response(200,json=entry(phone='')))
     result=asyncio.run(Integrations(tmp_path).lookup('bed'))
     assert result['translation']=='n. 床；床位' and result['warning']=='未查到音标，请手动补充'
+
+
+def test_asr_provider_reuses_http_session_between_words(tmp_path):
+    (tmp_path/'config.json').write_text(json.dumps({'asr':{
+        'base_url':'https://asr.invalid/v1','model':'fast-test','api_key':'isolated-test',
+    }}),encoding='utf-8')
+    integrations=Integrations(tmp_path)
+    first=integrations.service('asr')
+    provider_session=first.session
+    second=integrations.service('asr')
+    assert second is first
+    assert second.session is provider_session
+    integrations.close()
+    assert integrations._asr_service is None

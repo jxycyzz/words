@@ -22,10 +22,12 @@ test('browser microphone WAV, voice lock, real typing, close settlement and resu
   await page.evaluate(() => {
     const mediaDevices = navigator.mediaDevices
     const original = mediaDevices.getUserMedia.bind(mediaDevices)
+    ;(window as any).__getUserMediaCalls = 0
     Object.defineProperty(mediaDevices, 'getUserMedia', {
       configurable: true,
       value: async (constraints: MediaStreamConstraints) => {
-        await new Promise(resolve => setTimeout(resolve, 450))
+        ;(window as any).__getUserMediaCalls += 1
+        if ((window as any).__getUserMediaCalls === 1) await new Promise(resolve => setTimeout(resolve, 450))
         return original(constraints)
       },
     })
@@ -46,6 +48,17 @@ test('browser microphone WAV, voice lock, real typing, close settlement and resu
   await expect(page.getByTestId('voice-transcript')).toContainText('帧')
   await page.keyboard.type('voiceword', { delay: 30 })
   await expect.poll(async () => (await game()).saved_reward_money).toBe(2)
+  await expect.poll(async () => (await game()).round).toBe(2)
+  await expect.poll(async () => (await game()).active.length).toBe(1)
+  await expect.poll(async () => (await game()).locked).toBeNull()
+  await page.locator('canvas').focus()
+  await page.keyboard.down('Space')
+  await page.waitForTimeout(300)
+  await page.keyboard.up('Space')
+  await expect.poll(async () => !!(await game()).locked).toBe(true)
+  expect(await page.evaluate(() => (window as any).__getUserMediaCalls)).toBe(1)
+  await expect(page.getByTestId('voice-transcript')).toContainText('服务识别')
+  await expect(page.getByTestId('voice-transcript')).toContainText('总响应')
   page.on('dialog', dialog => dialog.accept())
   await page.getByRole('button', { name: '保存并返回' }).click()
   await expect(page.getByRole('heading', { name: '单词学习', exact: true })).toBeVisible()
@@ -77,7 +90,8 @@ test('no-microphone review can diagnose microphone without locking or recording 
   const game = async () => (await page.request.get(`/api/games/${id}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await game()).active.length).toBe(1)
   const historyBefore = (await (await page.request.get('/api/reports', { headers: ownerHeaders })).json()).history_total
-  const microphone = page.getByRole('button', { name: '按住测试麦克风' })
+  const microphone = page.locator('.voice-button')
+  await expect(microphone).toHaveText('按住测试麦克风')
 
   await microphone.dispatchEvent('pointerdown')
   await expect(page.getByText('请读出屏幕上的英文单词…')).toBeVisible()

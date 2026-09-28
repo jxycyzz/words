@@ -1,5 +1,12 @@
 class PCMCollector extends AudioWorkletProcessor {
+  constructor() {
+    super()
+    this.active = false
+    this.port.onmessage = event => { this.active = event.data?.active === true }
+  }
+
   process(inputs) {
+    if (!this.active) return true
     const channels = inputs[0]
     if (!channels?.length || !channels[0]?.length) return true
     if (channels.length === 1) {

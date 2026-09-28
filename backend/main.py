@@ -173,6 +173,7 @@ def create_app(data_dir=None, testing=False, services=None):
                     if app.state.game:
                         app.state.game.disconnect()
                 backup()
+                with contextlib.suppress(Exception): app.state.services.close()
                 store.conn.close()
 
     app = FastAPI(title='WordLearner B/S',version=VERSION,lifespan=lifespan)
@@ -489,7 +490,10 @@ def create_app(data_dir=None, testing=False, services=None):
                 raise HTTPException(413,'录音过长')
             chunks.append(chunk)
         try:
+            recognition_started = time.perf_counter()
             text = str(await app.state.services.transcribe(b''.join(chunks)) or '')
+            recognition_ms = round((time.perf_counter()-recognition_started)*1000,1)
+            logger.info('Voice recognition completed in %.1f ms for %d audio bytes',recognition_ms,size)
             with game.atomic():
                 if game.voice_required:
                     game.apply_voice(ticket,text)
@@ -508,6 +512,7 @@ def create_app(data_dir=None, testing=False, services=None):
             'recognized': bool(text.strip()),
             'matched': bool(game.state.voice_locked_runtime_id),
             'audio_bytes': size,
+            'recognition_ms': recognition_ms,
             'message': game.message,
             'state': game.view(),
         }

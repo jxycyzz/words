@@ -30,6 +30,8 @@ class Integrations:
         self.active_asr = asyncio.Semaphore(1)
         self.inflight = {}
         self.lookup_cache = OrderedDict()
+        self._asr_service = None
+        self._asr_signature = None
 
     def configured(self, kind):
         cfg = self.config.get(kind,{})
@@ -46,9 +48,21 @@ class Integrations:
         cfg = self.config[kind]
         if urlparse(cfg['base_url']).scheme not in ('http','https'):
             raise ValueError('服务地址格式不正确')
+        signature = (cfg['base_url'],cfg['model'],cfg['api_key'])
+        if kind=='asr' and self._asr_service is not None and self._asr_signature==signature:
+            return self._asr_service
         service=(AIService if kind=='ai' else QwenASRService)(base_url=cfg['base_url'],model=cfg['model'],auth_token=cfg['api_key'],timeout=120 if kind=='ai' else 30)
         service.session.headers.update({'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36','Accept':'application/json'})
+        if kind=='asr':
+            self._asr_service,self._asr_signature=service,signature
         return service
+
+    def close(self):
+        session=getattr(self._asr_service,'_session',None)
+        if session is not None:
+            session.close()
+        self._asr_service=None
+        self._asr_signature=None
 
     async def transcribe(self, body):
         try:

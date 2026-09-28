@@ -347,6 +347,7 @@ def test_voice_api_returns_server_transcript_and_capture_size(client):
     assert result['normalized_transcript']=='voiceword'
     assert result['recognized'] is True
     assert result['audio_bytes']==len(body)
+    assert result['recognition_ms']>=0
     assert result['matched'] is True
     assert result['state']['locked']
     assert result['message']=='已锁定：猫'

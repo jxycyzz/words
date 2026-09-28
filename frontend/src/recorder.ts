@@ -37,16 +37,24 @@ export class Recorder {
   private frames = 0
   private sumSquares = 0
   private peak = 0
-  private cancelled = false
+  private disposed = false
+  private capturing = false
+  private frameReady: (() => void) | null = null
+  private frameFailed: ((reason: Error) => void) | null = null
   private lastProgressAt = 0
   deviceId = ''
   deviceLabel = ''
   sampleRate = 0
+  startupMilliseconds = 0
 
   constructor(private preferredDeviceId = '', private onProgress?: (progress: CaptureProgress) => void) {}
 
   get durationSeconds() {
     return this.frames / Math.max(this.sampleRate || this.context?.sampleRate || 16000, 1)
+  }
+
+  matchesDevice(deviceId: string) {
+    return this.deviceId ? !deviceId || this.deviceId === deviceId : this.preferredDeviceId === deviceId
   }
 
   private constraints(): MediaTrackConstraints {
@@ -69,8 +77,15 @@ export class Recorder {
     }
   }
 
-  async start() {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器无法录音，请使用本机地址或 HTTPS')
+  private resetCapture() {
+    this.chunks = []
+    this.frames = 0
+    this.sumSquares = 0
+    this.peak = 0
+    this.lastProgressAt = 0
+  }
+
+  private async initialize() {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: this.constraints(), video: false })
     } catch (error) {
@@ -79,7 +94,7 @@ export class Recorder {
       this.preferredDeviceId = ''
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: this.constraints(), video: false })
     }
-    if (this.cancelled) { this.dispose(); throw new Error('录音已取消') }
+    if (this.disposed) { this.dispose(); throw new Error('录音已取消') }
     const track = this.stream.getAudioTracks()[0]
     if (!track) { this.dispose(); throw new Error('浏览器没有返回麦克风音轨') }
     const settings = track.getSettings()
@@ -88,13 +103,10 @@ export class Recorder {
     this.context = new AudioContext()
     this.sampleRate = this.context.sampleRate
     await this.context.audioWorklet.addModule('/pcm-worklet.js')
-    if (this.cancelled) { this.dispose(); throw new Error('录音已取消') }
-
-    let ready: (() => void) | null = null
-    const firstFrame = new Promise<void>(resolve => { ready = resolve })
+    if (this.disposed) { this.dispose(); throw new Error('录音已取消') }
     this.worklet = new AudioWorkletNode(this.context, 'pcm-collector')
     this.worklet.port.onmessage = event => {
-      if (this.cancelled || this.frames >= this.sampleRate * 15) return
+      if (this.disposed || !this.capturing || this.frames >= this.sampleRate * 15) return
       const pcm = event.data as Float32Array
       if (!(pcm instanceof Float32Array) || !pcm.length) return
       this.chunks.push(pcm)
@@ -107,7 +119,7 @@ export class Recorder {
       }
       this.peak = Math.max(this.peak, localPeak)
       this.sumSquares += localSquares
-      ready?.(); ready = null
+      this.frameReady?.(); this.frameReady = null; this.frameFailed = null
       const now = performance.now()
       if (now - this.lastProgressAt >= 80) {
         this.lastProgressAt = now
@@ -117,16 +129,35 @@ export class Recorder {
     this.source = this.context.createMediaStreamSource(this.stream)
     this.mute = this.context.createGain(); this.mute.gain.value = 0
     this.source.connect(this.worklet).connect(this.mute).connect(this.context.destination)
+  }
+
+  async start() {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前浏览器无法录音，请使用本机地址或 HTTPS')
+    if (this.disposed) throw new Error('录音设备已经关闭')
+    const startedAt = performance.now()
+    if (!this.stream || !this.context || !this.worklet) await this.initialize()
+    if (this.disposed || !this.context) throw new Error('录音已取消')
+    this.resetCapture()
+    const firstFrame = new Promise<void>((resolve, reject) => {
+      this.frameReady = resolve
+      this.frameFailed = reject
+    })
+    this.capturing = true
+    this.worklet?.port.postMessage({ active: true })
     await this.context.resume()
     await Promise.race([
       firstFrame,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('麦克风已打开，但没有收到音频数据')), 2500)),
     ])
-    if (this.cancelled) { this.dispose(); throw new Error('录音已取消') }
+    if (this.disposed) throw new Error('录音已取消')
+    this.startupMilliseconds = performance.now() - startedAt
     this.onProgress?.(this.progress())
   }
 
   stop(): RecordingResult {
+    this.capturing = false
+    this.worklet?.port.postMessage({ active: false })
+    this.frameReady = null; this.frameFailed = null
     const rate = this.sampleRate || this.context?.sampleRate || 16000
     const stats = this.progress()
     const pcm = new Float32Array(this.frames)
@@ -146,12 +177,13 @@ export class Recorder {
       view.setInt16(44 + i * 2, sample * (sample < 0 ? 32768 : 32767), true)
     }
     const result = { audio: buffer, ...stats, deviceId: this.deviceId, deviceLabel: this.deviceLabel, sampleRate: rate }
-    this.dispose()
     return result
   }
 
   dispose() {
-    this.cancelled = true
+    this.disposed = true; this.capturing = false
+    this.frameFailed?.(new Error('录音已取消')); this.frameReady = null; this.frameFailed = null
+    this.worklet?.port.postMessage({ active: false })
     if (this.worklet) { this.worklet.port.onmessage = null; this.worklet.disconnect(); this.worklet = null }
     this.source?.disconnect(); this.source = null
     this.mute?.disconnect(); this.mute = null

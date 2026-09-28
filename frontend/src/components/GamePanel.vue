@@ -15,9 +15,10 @@ const voiceMatched = ref<boolean | null>(null), voiceAudioBytes = ref(0)
 const audioInputs = ref<AudioInputOption[]>([])
 const selectedAudioInput = ref(localStorage.getItem('wordlearner-audio-input') || '')
 const voiceDevice = ref(''), voiceLevel = ref(0), voiceDuration = ref(0), voiceFrames = ref(0)
+const voiceStartupMs = ref(0), voiceRecognitionMs = ref<number | null>(null), voiceRoundtripMs = ref(0)
 let socket: WebSocket | null = null, heartbeat = 0, animation = 0, lastSpoken = '', stopped = false
 let sequence = 0, inflight: Record<string, any> | null = null, queue: Record<string, any>[] = []
-let recorder: Recorder | null = null, voiceHeld = false, pendingVoiceStop = false, recordTimer = 0, closing = false
+let recorder: Recorder | null = null, voiceHeld = false, pendingVoiceStop = false, recordTimer = 0, warmTimer = 0, closing = false
 let beams: { at: number; x: number; y: number }[] = []
 const wordPositions = new Map<string, { x: number; y: number }>()
 const isReviewMode = (mode?: string) => mode === 'review' || mode === 'debug'
@@ -79,12 +80,20 @@ function connect() {
 }
 function cancelRecording() {
   voiceHeld = false; pendingVoiceStop = false; recording.value = false; processing.value = false
-  clearTimeout(recordTimer); recorder?.dispose(); recorder = null
+  clearTimeout(recordTimer); clearTimeout(warmTimer); recorder?.dispose(); recorder = null
+}
+function scheduleRecorderIdleClose() {
+  clearTimeout(warmTimer)
+  warmTimer = window.setTimeout(() => {
+    if (recording.value || processing.value) return
+    recorder?.dispose(); recorder = null
+  }, 60000)
 }
 async function refreshAudioInputs() {
   try { audioInputs.value = await listAudioInputs() } catch { audioInputs.value = [] }
 }
 function chooseAudioInput() {
+  clearTimeout(warmTimer); recorder?.dispose(); recorder = null; voiceDevice.value = ''
   if (selectedAudioInput.value) localStorage.setItem('wordlearner-audio-input', selectedAudioInput.value)
   else localStorage.removeItem('wordlearner-audio-input')
   const selected = audioInputs.value.find(item => item.deviceId === selectedAudioInput.value)
@@ -106,12 +115,14 @@ function microphoneErrorMessage(reason: unknown) {
 }
 async function beginVoice() {
   if (recording.value || processing.value || state.value?.pause || !connected.value) return
+  clearTimeout(warmTimer)
   if (state.value?.voice_required && state.value.locked) {
     voiceStatus.value = '当前单词已经语音锁定，请先完成输入'
     canvas.value?.focus(); return
   }
   voiceTranscript.value = ''; voiceAudioBytes.value = 0; voiceMatched.value = null
-  voiceFrames.value = 0; voiceDuration.value = 0; voiceLevel.value = 0; pendingVoiceStop = false
+  voiceFrames.value = 0; voiceDuration.value = 0; voiceLevel.value = 0
+  voiceStartupMs.value = 0; voiceRecognitionMs.value = null; voiceRoundtripMs.value = 0; pendingVoiceStop = false
   if (!props.asr) {
     voiceStatus.value = '语音识别服务未配置'
     error.value = '语音识别尚未配置；请先配置语音服务后使用一键复习'
@@ -119,12 +130,17 @@ async function beginVoice() {
   }
   voiceStatus.value = '正在打开麦克风…'
   voiceHeld = true; error.value = ''
-  const current = new Recorder(selectedAudioInput.value, progress => { if (recorder === current) updateCapture(progress) })
-  recorder = current
+  let current = recorder
+  if (!current || !current.matchesDevice(selectedAudioInput.value)) {
+    current?.dispose()
+    current = new Recorder(selectedAudioInput.value, progress => { if (recorder === current) updateCapture(progress) })
+    recorder = current
+  }
   command({ type: 'voice_start' })
   try {
     await current.start()
     if (recorder !== current) { current.dispose(); return }
+    voiceStartupMs.value = current.startupMilliseconds
     recording.value = true
     voiceDevice.value = current.deviceLabel
     if (current.deviceId) {
@@ -156,7 +172,7 @@ async function endVoice() {
     return
   }
   recording.value = false; processing.value = true
-  const capture = recorder.stop(); recorder = null
+  const capture = recorder.stop()
   voiceAudioBytes.value = capture.audio.byteLength; voiceFrames.value = capture.frameCount
   voiceDuration.value = capture.durationSeconds; voiceLevel.value = Math.max(capture.peakLevel, capture.rmsLevel * 2)
   voiceDevice.value = capture.deviceLabel
@@ -164,7 +180,7 @@ async function endVoice() {
     voiceMatched.value = false; processing.value = false
     voiceStatus.value = '采集时间太短，没有取得可识别的麦克风音频，请按住空格朗读后再松开'
     if (connected.value) command({ type: 'voice_cancel' })
-    canvas.value?.focus(); return
+    scheduleRecorderIdleClose(); canvas.value?.focus(); return
   }
   voiceStatus.value = '音频已采集，正在识别…'
   // Wait for the server-generated recording ticket, never submit a transcript from the browser.
@@ -172,8 +188,11 @@ async function endVoice() {
   try {
     const ticket = state.value?.voice_ticket
     if (!ticket) throw new Error('录音未开始，请等待单词出现后再试')
-    const result = await api<{ transcript: string; normalized_transcript: string; recognized: boolean; matched: boolean; audio_bytes: number; message: string; state: GameView }>(`/games/${props.id}/voice`, { method: 'POST', body: capture.audio,
+    const requestStartedAt = performance.now()
+    const result = await api<{ transcript: string; normalized_transcript: string; recognized: boolean; matched: boolean; audio_bytes: number; recognition_ms: number; message: string; state: GameView }>(`/games/${props.id}/voice`, { method: 'POST', body: capture.audio,
       headers: { 'Content-Type': 'audio/wav', 'X-Voice-Ticket': ticket } })
+    voiceRecognitionMs.value = result.recognition_ms
+    voiceRoundtripMs.value = performance.now() - requestStartedAt
     voiceTranscript.value = result.transcript.trim() || '（未识别到文字）'
     voiceAudioBytes.value = result.audio_bytes
     voiceMatched.value = result.state.voice_required ? result.matched : result.recognized
@@ -184,7 +203,7 @@ async function endVoice() {
     voiceTranscript.value ||= '（识别服务未返回文字）'
     voiceMatched.value = false; voiceStatus.value = `识别失败：${message}`; error.value = message
     if (connected.value) command({ type: 'voice_cancel' })
-  } finally { processing.value = false; canvas.value?.focus() }
+  } finally { processing.value = false; scheduleRecorderIdleClose(); canvas.value?.focus() }
 }
 function keydown(event: KeyboardEvent) {
   if ((event.target as HTMLElement).matches('input,select,textarea,button')) return
@@ -339,8 +358,8 @@ onUnmounted(() => {
         </select>
         <button type="button" class="text-button voice-refresh" :disabled="recording || processing" @click="refreshAudioInputs">刷新设备</button>
         <span class="voice-meter" :class="{ active: recording }" aria-hidden="true"><i :style="{ width: `${Math.min(100, Math.round(voiceLevel * 250))}%` }" /></span>
-        <small v-if="recording">实时音量 {{ Math.min(100, Math.round(voiceLevel * 250)) }}% · {{ voiceDuration.toFixed(1) }} 秒 · {{ voiceFrames }} 帧</small>
-        <small v-else-if="voiceFrames">{{ voiceDevice || '系统默认麦克风' }} · 采集 {{ voiceDuration.toFixed(2) }} 秒 · {{ voiceFrames }} 帧<span v-if="voiceAudioBytes"> · 已上传 {{ (voiceAudioBytes / 1024).toFixed(1) }} KB</span></small>
+        <small v-if="recording">实时音量 {{ Math.min(100, Math.round(voiceLevel * 250)) }}% · {{ voiceDuration.toFixed(1) }} 秒 · {{ voiceFrames }} 帧 · 启动 {{ Math.round(voiceStartupMs) }} ms</small>
+        <small v-else-if="voiceFrames">{{ voiceDevice || '系统默认麦克风' }} · 采集 {{ voiceDuration.toFixed(2) }} 秒 · {{ voiceFrames }} 帧<span v-if="voiceAudioBytes"> · 已上传 {{ (voiceAudioBytes / 1024).toFixed(1) }} KB</span><span v-if="voiceStartupMs"> · 启动 {{ Math.round(voiceStartupMs) }} ms</span><span v-if="voiceRecognitionMs !== null"> · 服务识别 {{ (voiceRecognitionMs / 1000).toFixed(2) }} 秒</span><span v-if="voiceRoundtripMs"> · 总响应 {{ (voiceRoundtripMs / 1000).toFixed(2) }} 秒</span></small>
         <small v-else>{{ voiceDevice || '选择麦克风后，按住空格时可在这里查看实时采集' }}</small>
       </div>
     </div>
