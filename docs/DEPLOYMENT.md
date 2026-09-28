@@ -16,6 +16,8 @@
 
 仓库 `deploy/` 内提供 HTTP 跳转、HTTPS 反向代理和证书续期脚本。服务器的 Nginx 配置应在修改前备份，并在 `nginx -t` 通过后重载。Basic Auth 用户文件及 Let's Encrypt 私钥只能保留在服务器。
 
+首次安装顺序为：运行 `deploy/install-proxy.sh http`，再运行 `deploy/issue-cert.sh`，创建 `/opt/runfuda/production/certs/words.htpasswd`，最后运行 `deploy/install-proxy.sh https`。安装脚本使用带时间戳的旁路备份，并通过标记避免重复插入同一站点配置。
+
 ## 环境边界
 
 - `WORDLEARNER_PUBLIC_MODE=1`：允许来自同机反向代理容器的请求。
