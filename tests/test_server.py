@@ -172,11 +172,20 @@ def test_free_hint_does_not_create_reward_or_answer(store):
     session,clock = game(store)
     session.command({'seq':1,'type':'hint_start','badge':1})
     assert len(session.state.pending_round)==3
+    assert session.message=='正在提示 1，松开后恢复，该词本轮再出现 3 次'
     session.command({'seq':2,'type':'hint_end'})
+    assert session.message==''
     type_word(session,'cat')
     assert store.summary()['total_score']==0
     assert store.rows('SELECT * FROM review_history')==[]
     assert session.view()['reward_money']==0
+
+
+def test_missing_hint_badge_reports_same_feedback_as_desktop(store):
+    session,_ = game(store)
+    session.command({'seq':1,'type':'hint_start','badge':5})
+    assert session.pause_kind is None
+    assert session.message=='当前没有编号 5 的单词'
 
 
 def test_retry_and_restart_caps_persist(store):

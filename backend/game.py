@@ -286,14 +286,19 @@ class GameSession:
         elif kind=='hint_start':
             if not self.review or not self.state.game_active:
                 raise ValueError('当前不能使用编号提示')
-            target = self.state.active_word_by_badge(event['badge'],BASELINE)
+            badge = event['badge']
+            target = self.state.active_word_by_badge(badge,BASELINE)
             if target:
                 self.state.add_repeats_for_runtime_id(target.runtime_id,3)
                 self.pause_kind, self.pause_at = 'hint', self.clock()
                 self.hint_runtime = target.runtime_id
+                self.message = f'正在提示 {badge}，松开后恢复，该词本轮再出现 3 次'
+            else:
+                self.message = f'当前没有编号 {badge} 的单词'
         elif kind=='hint_end':
             if self.pause_kind=='hint':
                 self.end_pause()
+                self.message = ''
         elif kind=='voice_start':
             if not self.review or not self.state.game_active:
                 raise ValueError('当前不能开始语音锁定')

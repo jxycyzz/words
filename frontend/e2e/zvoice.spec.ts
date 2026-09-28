@@ -17,18 +17,33 @@ test('browser microphone WAV, voice lock, real typing, close settlement and resu
   const game = async () => (await page.request.get(`/api/games/${id}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await game()).active.length).toBe(1)
   await expect(page.getByTestId('voice-transcript')).toContainText('等待朗读')
+  await expect(page.getByLabel('输入设备')).toBeVisible()
+  await expect(page.getByTestId('voice-transcript')).toContainText('按住空格时可在这里查看实时采集')
+  await page.evaluate(() => {
+    const mediaDevices = navigator.mediaDevices
+    const original = mediaDevices.getUserMedia.bind(mediaDevices)
+    Object.defineProperty(mediaDevices, 'getUserMedia', {
+      configurable: true,
+      value: async (constraints: MediaStreamConstraints) => {
+        await new Promise(resolve => setTimeout(resolve, 450))
+        return original(constraints)
+      },
+    })
+  })
   await page.locator('canvas').focus()
   await page.keyboard.type('voiceword')
   await expect.poll(async () => (await game()).score).toBe(0)
   await page.keyboard.down('Space')
-  await expect(page.getByText('请读出屏幕上的英文单词…')).toBeVisible()
-  await page.waitForTimeout(350)
+  await page.waitForTimeout(70)
   await page.keyboard.up('Space')
+  await expect(page.getByTestId('voice-transcript')).toContainText('等待麦克风就绪后自动识别')
   await expect.poll(async () => !!(await game()).locked).toBe(true)
   await expect(page.locator('.game-message')).toContainText('已锁定')
   await expect(page.getByTestId('voice-transcript')).toContainText('voiceword')
   await expect(page.getByTestId('voice-transcript')).toContainText('已锁定')
   await expect(page.getByTestId('voice-transcript')).toContainText('已上传')
+  await expect(page.getByTestId('voice-transcript')).toContainText('采集')
+  await expect(page.getByTestId('voice-transcript')).toContainText('帧')
   await page.keyboard.type('voiceword', { delay: 30 })
   await expect.poll(async () => (await game()).saved_reward_money).toBe(2)
   page.on('dialog', dialog => dialog.accept())

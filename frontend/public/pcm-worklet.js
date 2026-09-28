@@ -1,7 +1,16 @@
 class PCMCollector extends AudioWorkletProcessor {
   process(inputs) {
-    const channel = inputs[0]?.[0]
-    if (channel) this.port.postMessage(channel.slice())
+    const channels = inputs[0]
+    if (!channels?.length || !channels[0]?.length) return true
+    if (channels.length === 1) {
+      this.port.postMessage(channels[0].slice())
+      return true
+    }
+    const mono = new Float32Array(channels[0].length)
+    for (const channel of channels) {
+      for (let index = 0; index < mono.length; index += 1) mono[index] += channel[index] / channels.length
+    }
+    this.port.postMessage(mono)
     return true
   }
 }
