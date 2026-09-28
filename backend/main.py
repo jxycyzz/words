@@ -18,14 +18,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .clock import today
+from .clock import timestamp,today
 from .domain.parent_settings import ParentSettingsManager
 from .game import GameSession
 from .integrations import Integrations
 from .jobs import JobWorker
 from .mail import MailWorker
 from .schemas import AIInput, Command, PasswordInput, PolicyInput, StartGame, WordIds, WordInput, StrictModel
-from .store import Store
+from .store import Store,encoded
 from .version import VERSION,build_id
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +87,37 @@ def create_app(data_dir=None, testing=False, services=None):
     if not testing and not directory.is_relative_to(ROOT):
         raise RuntimeError('B/S 数据目录必须位于 bs-web 内，禁止访问桌面版数据库')
 
+    def retire_other_sessions(store, keep_id, reason):
+        """Keep one resumable game and close stale snapshots without changing study results."""
+        rows=store.rows("SELECT id,payload FROM sessions WHERE status IN ('running','paused') AND id<>?",(keep_id,))
+        retired=[]
+        for row in rows:
+            payload=json.loads(row['payload'])
+            payload['terminal_reason']=reason
+            if isinstance(payload.get('state'),dict):
+                payload['state']['game_active']=False
+            store.conn.execute('UPDATE sessions SET status=?,payload=?,updated_at=? WHERE id=?',
+                               ('closed',encoded(payload),timestamp(),row['id']))
+            retired.append(row['id'])
+        if retired:
+            store.log_operation('game_sessions_superseded','当前页面已关闭其他未完成游戏',
+                                keep_session_id=keep_id,closed_session_ids=retired,reason=reason)
+        return retired
+
+    def claim_prepare_jobs(store, owner):
+        claimed=[]
+        for row in store.rows("SELECT id,payload FROM background_jobs WHERE kind='prepare_game' AND status IN ('pending','running')"):
+            payload=json.loads(row['payload'])
+            if payload.get('owner')==owner:
+                continue
+            payload['owner']=owner
+            store.conn.execute('UPDATE background_jobs SET payload=?,updated_at=? WHERE id=?',
+                               (encoded(payload),timestamp(),row['id']))
+            claimed.append(row['id'])
+        if claimed:
+            store.log_operation('game_preparation_transferred','练习准备任务已由当前页面接管',job_ids=claimed)
+        return claimed
+
     @asynccontextmanager
     async def lifespan(app):
         with process_lock(directory):
@@ -107,9 +138,11 @@ def create_app(data_dir=None, testing=False, services=None):
                 for old in sorted(folder.glob('web-*.sqlite3'),key=lambda p:p.name,reverse=True)[40:]:
                     old.unlink()
             backup()
-            rows = store.rows("SELECT * FROM sessions WHERE status IN ('running','paused') ORDER BY updated_at DESC LIMIT 1")
+            rows = store.rows("SELECT * FROM sessions WHERE status IN ('running','paused') ORDER BY updated_at DESC,id DESC LIMIT 1")
             if rows:
                 app.state.game = GameSession.restore(store,rows[0])
+                with store.conn:
+                    retire_other_sessions(store,app.state.game.id,'server_kept_latest_session')
             async def ticker():
                 last_backup=time.monotonic()
                 while True:
@@ -234,6 +267,7 @@ def create_app(data_dir=None, testing=False, services=None):
             else:
                 game=GameSession(store(),payload['owner'],payload['mode'],words,payload['policy'])
                 game.save()
+            retire_other_sessions(store(),game.id,'new_session_selected')
             store().log_operation('no_microphone_review_prepared' if game.mode=='debug' else 'game_prepared',
                 '免麦克风复习已准备：实际打字计入正式记录和奖励' if game.mode=='debug' else 'AI 学习卡检查完成，可以进入游戏',session_id=game.id,word_count=len(words))
             if game.review: store().enqueue_job('preheat',{'day':today()})
@@ -268,7 +302,17 @@ def create_app(data_dir=None, testing=False, services=None):
             raise HTTPException(400,'缺少页面标识')
         game = app.state.game
         resumable = game and game.status in ('running','paused')
+        if not resumable:
+            rows=store().rows("SELECT * FROM sessions WHERE status IN ('running','paused') ORDER BY updated_at DESC,id DESC LIMIT 1")
+            if rows:
+                game=GameSession.restore(store(),rows[0])
+                app.state.game=game
+                resumable=True
         transferred = await transfer_game(game,request.state.owner) if resumable else False
+        with store().conn:
+            if resumable:
+                retire_other_sessions(store(),game.id,'current_page_claimed_session')
+            claim_prepare_jobs(store(),request.state.owner)
         return {'transferred':transferred,'active_game':{'id':game.id,'mode':game.mode,'owned':True} if resumable else None}
 
     @app.post('/api/presence')
@@ -373,7 +417,8 @@ def create_app(data_dir=None, testing=False, services=None):
     async def start_game(request: Request,body: StartGame):
         pending=store().rows("SELECT id,payload FROM background_jobs WHERE kind='prepare_game' AND status IN ('pending','running') LIMIT 1")
         if pending:
-            if json.loads(pending[0]['payload'])['owner']!=request.state.owner: raise HTTPException(409,'另一浏览器正在准备练习')
+            with store().conn:
+                claim_prepare_jobs(store(),request.state.owner)
             return {'job_id':pending[0]['id'],'preparing':True}
         if not app.state.services.configured('ai'):
             raise ValueError('进入练习前需要完成 AI 学习卡检查，请配置 AI 服务后重试')
@@ -382,7 +427,7 @@ def create_app(data_dir=None, testing=False, services=None):
         daily_mode = body.mode in ('review','debug')
         if existing and existing.status in ('paused','running') and existing.day==today():
             if existing.owner!=request.state.owner:
-                raise HTTPException(409,'另一浏览器有未完成的游戏，请回到原浏览器继续')
+                await transfer_game(existing,request.state.owner)
             if existing.connected:
                 raise HTTPException(409,'游戏页面已经打开，请返回已有页面')
             if existing.mode==body.mode or (daily_mode and existing.mode in ('review','debug')): resume_id=existing.id
@@ -392,7 +437,12 @@ def create_app(data_dir=None, testing=False, services=None):
             else:
                 rows=store().rows("SELECT * FROM sessions WHERE status='paused' AND mode=? AND day=? ORDER BY updated_at DESC LIMIT 1",(body.mode,today()))
             if rows:
-                if rows[0]['owner']!=request.state.owner: raise HTTPException(409,'另一浏览器有未完成的游戏')
+                if rows[0]['owner']!=request.state.owner:
+                    with store().conn:
+                        store().conn.execute('UPDATE sessions SET owner=?,updated_at=? WHERE id=?',
+                                             (request.state.owner,timestamp(),rows[0]['id']))
+                        store().log_operation('game_transferred','未完成游戏已由当前页面接管；学习结果未改变',
+                                              session_id=rows[0]['id'])
                 resume_id=rows[0]['id']
         with store().conn:
             if existing and existing.status in ('paused','running') and existing.day!=today():

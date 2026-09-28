@@ -289,7 +289,8 @@ def test_game_session_owner_and_input_contract(client):
         assert msg['type']=='error'
     client.cookies.clear()
     assert client.get(f'/api/games/{game_id}').status_code==404
-    assert client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]}).status_code==409
+    takeover=client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]})
+    assert takeover.status_code==200 and takeover.json()['preparing'] is True
 
 
 def test_latest_page_claim_revokes_old_socket_without_changing_results(client):
@@ -334,6 +335,49 @@ def test_transferred_page_owner_persists_for_restart(store):
     restored=GameSession.restore(store,row)
     assert row['owner']=='b'*32
     assert restored.owner=='b'*32
+
+
+def test_current_page_starts_without_conflict_and_closes_other_modes(tmp_path):
+    path=tmp_path/'wordlearner-web.sqlite3'
+    store=Store(path)
+    saved=word(store)
+    policy=normalize_review_policy()
+    store.prepare_daily(policy)
+    old_page,new_page='a'*32,'b'*32
+    review=GameSession(store,old_page,'debug',[saved],policy)
+    practice=GameSession(store,old_page,'practice',[saved],policy)
+    with store.conn:
+        review.save(); practice.save()
+        store.conn.execute('UPDATE sessions SET updated_at=? WHERE id=?',('2026-01-01T00:00:00+08:00',review.id))
+        store.conn.execute('UPDATE sessions SET updated_at=? WHERE id=?',('2026-01-02T00:00:00+08:00',practice.id))
+    before={table:store.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
+            for table in ('review_history','score_events','reward_attempts','settlement_events')}
+    store.conn.close()
+
+    headers={'X-WordLearner-Request':'1','X-WordLearner-Page':new_page}
+    with TestClient(create_app(tmp_path,testing=True,services=FakeServices())) as browser:
+        boot=browser.get('/api/bootstrap',headers=headers).json()
+        assert boot['active_game']=={'id':practice.id,'mode':'practice','owned':False}
+        response=browser.post('/api/games',json={'mode':'debug','word_ids':[]},headers=headers)
+        assert response.status_code==200,response.text
+        job_id=response.json()['job_id']
+        for _ in range(100):
+            job=browser.get(f'/api/jobs/{job_id}',headers=headers).json()
+            if job['status'] in ('completed','failed'): break
+            time.sleep(.02)
+        assert job['status']=='completed',job
+        assert job['result']['resumed'] is False
+        new_game_id=job['result']['id']
+
+    store=Store(path)
+    rows={row['id']:row for row in store.rows('SELECT id,owner,status FROM sessions')}
+    assert rows[review.id]['status']=='closed'
+    assert rows[practice.id]['status']=='closed'
+    assert rows[new_game_id]=={'id':new_game_id,'owner':new_page,'status':'paused'}
+    after={table:store.conn.execute(f'SELECT count(*) FROM {table}').fetchone()[0] for table in before}
+    assert after==before
+    assert store.rows("SELECT id FROM operation_logs WHERE event_type='game_sessions_superseded'")
+    store.conn.close()
 
 
 def test_parent_api_rejects_bad_password(client):

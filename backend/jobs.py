@@ -51,6 +51,9 @@ class JobWorker:
                 self.update(job_id,progress=index+1,result=encoded({'items':results,'failures':failures}))
             if job['kind']=='prepare_game':
                 if failures:raise ValueError('以下单词未完成 AI 查词，已停止进入练习：'+ '；'.join(f['message'] for f in failures[:3]))
+                latest=self.store.rows('SELECT payload FROM background_jobs WHERE id=?',(job_id,))
+                if latest:
+                    payload=json.loads(latest[0]['payload'])
                 result=self.on_prepared(payload)
             else:
                 result={'items':results,'failures':failures}

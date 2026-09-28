@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-VERSION='0.2.5'
+VERSION='0.2.6'
 
 
 def build_id():
