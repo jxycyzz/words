@@ -3,8 +3,9 @@ import { test, expect } from '@playwright/test'
 test('desktop canvas layout: long definitions stay in distinct lanes and survive resize', async ({ page }) => {
   await page.addInitScript(() => {
     const proto = CanvasRenderingContext2D.prototype
-    const fillRect = proto.fillRect, fillText = proto.fillText
+    const fillRect = proto.fillRect, fillText = proto.fillText, moveTo = proto.moveTo, lineTo = proto.lineTo, stroke = proto.stroke
     ;(window as any).drawnText = []
+    ;(window as any).beamLines = []
     proto.fillRect = function (x, y, w, h) {
       if (x === 0 && y === 0 && w > 800 && h > 500) (window as any).drawnText = []
       return fillRect.call(this, x, y, w, h)
@@ -13,6 +14,20 @@ test('desktop canvas layout: long definitions stay in distinct lanes and survive
       ;(window as any).drawnText.push({ text, x, y, maxWidth, width: this.measureText(text).width, font: this.font })
       if (maxWidth === undefined) return fillText.call(this, text, x, y)
       return fillText.call(this, text, x, y, maxWidth)
+    }
+    proto.moveTo = function (x, y) {
+      ;(this as any).__testMove = { x, y }
+      return moveTo.call(this, x, y)
+    }
+    proto.lineTo = function (x, y) {
+      ;(this as any).__testLine = { x, y }
+      return lineTo.call(this, x, y)
+    }
+    proto.stroke = function () {
+      if (this.strokeStyle === '#0a84ff' && this.lineWidth === 2 && (this as any).__testMove && (this as any).__testLine) {
+        ;(window as any).beamLines.push({ from: (this as any).__testMove, to: (this as any).__testLine })
+      }
+      return stroke.call(this)
     }
   })
   await page.goto('/')
@@ -60,6 +75,21 @@ test('desktop canvas layout: long definitions stay in distinct lanes and survive
   await expect(page.getByRole('tooltip')).toBeVisible()
   const fullText = await page.getByRole('tooltip').innerText()
   expect(definitions.some(([, text]) => text === fullText)).toBe(true)
+  const carPrompt = prompts.find((item: any) => item.text.startsWith('n. 汽车'))
+  expect(carPrompt).toBeTruthy()
+  await page.evaluate(() => { (window as any).beamLines = [] })
+  await page.keyboard.press('z')
+  await page.waitForTimeout(250)
+  expect(await page.evaluate(() => (window as any).beamLines.length)).toBe(0)
+  await page.keyboard.press('c')
+  await expect.poll(async () => page.evaluate(() => (window as any).beamLines.length)).toBeGreaterThan(0)
+  await page.waitForTimeout(220)
+  const finalBeam = await page.evaluate(() => (window as any).beamLines.at(-1))
+  const beamX = finalBeam.to.x - finalBeam.from.x, beamY = finalBeam.to.y - finalBeam.from.y
+  const targetX = carPrompt.x - finalBeam.from.x, targetY = carPrompt.y + 30 - finalBeam.from.y
+  const distanceFromTargetRay = Math.abs(beamX * targetY - beamY * targetX) / Math.hypot(beamX, beamY)
+  expect(beamX * targetX + beamY * targetY).toBeGreaterThan(0)
+  expect(distanceFromTargetRay).toBeLessThan(12)
   expect((await game()).score).toBe(0)
   await page.getByRole('button', { name: '保存并返回' }).click()
   const words = await (await page.request.get('/api/words')).json()

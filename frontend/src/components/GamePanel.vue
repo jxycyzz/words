@@ -14,6 +14,7 @@ let socket: WebSocket | null = null, heartbeat = 0, animation = 0, lastSpoken = 
 let sequence = 0, inflight: Record<string, any> | null = null, queue: Record<string, any>[] = []
 let recorder: Recorder | null = null, voiceHeld = false, recordTimer = 0, closing = false
 let beams: { at: number; x: number; y: number }[] = []
+const wordPositions = new Map<string, { x: number; y: number }>()
 const isReviewMode = (mode?: string) => mode === 'review' || mode === 'debug'
 function sendNext() {
   if (!connected.value || inflight || !queue.length) return
@@ -50,6 +51,10 @@ function connect() {
     } else if (msg.type === 'ack') {
       sequence = msg.seq
       const justClosed = inflight?.type === 'close'
+      if (typeof msg.hit_runtime_id === 'string') {
+        const position = wordPositions.get(msg.hit_runtime_id)
+        if (position) beams.push({ at: performance.now(), ...position })
+      }
       inflight = null; sendNext()
       if (justClosed && closing) emit('close')
     } else if (msg.type === 'error') {
@@ -110,9 +115,6 @@ function keydown(event: KeyboardEvent) {
   if (recording.value || processing.value || state.value.pause || !state.value.game_active) return
   if (event.key.length === 1) {
     event.preventDefault(); command({ type: 'key', char: event.key })
-    const target = state.value.active.find(w => w.runtime_id === state.value?.locked) || state.value.active.at(-1)
-    const position = layout.find(item => item.word.runtime_id === target?.runtime_id)
-    if (position) beams.push({ at: performance.now(), x: position.x / width, y: (position.y + 30) / height })
   }
 }
 function keyup(event: KeyboardEvent) {
@@ -169,6 +171,7 @@ function draw() {
     }
     ctx.textBaseline = 'middle'
     layout = s ? wordLayouts(ctx, s, width, height) : []
+    for (const item of layout) wordPositions.set(item.word.runtime_id, { x: item.x / width, y: (item.y + 30) / height })
     for (const [i, item] of layout.entries()) {
       const { word, x, y, prompt, display, width: boxWidth } = item
       const locked = word.runtime_id === s?.locked, hint = word.runtime_id === s?.hint_runtime

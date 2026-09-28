@@ -66,6 +66,19 @@ def test_points_come_only_from_events_and_replay_is_idempotent(store):
     assert session.elapsed==pytest.approx(.033)
 
 
+def test_key_command_reports_only_the_authoritative_correct_target(store):
+    session,_ = game(store,'practice')
+    target = session.state.active[0]
+    wrong = 'z' if target.next_char != 'z' else 'q'
+
+    assert session.command({'seq':1,'type':'key','char':wrong}) == {}
+    assert session.command({'seq':2,'type':'key','char':target.next_char}) == {
+        'hit_runtime_id': target.runtime_id,
+    }
+    # A replay is acknowledged without repeating the shot animation.
+    assert session.command({'seq':2,'type':'key','char':target.next_char}) == {}
+
+
 @pytest.mark.parametrize('payload',[
     {'seq':1,'type':'key','char':'a','score':999},
     {'seq':1,'type':'key','char':'cat'},

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 
 from .clock import today, timestamp
-from .domain.game_state import GameState, MistakeEvent
+from .domain.game_state import GameState, HitEvent, MistakeEvent
 from .domain.models import PracticeWord
 from .domain.rules import calculate_reward_round
 from .store import encoded
@@ -209,11 +209,14 @@ class GameSession:
 
     def input_char(self, char):
         if self.pause_kind or not self.state.game_active:
-            return
+            return None
         if self.voice_required and self.state.voice_locked_word(BASELINE) is None:
             self.message = '请先按住空格读出单词，语音锁定后再输入'
-            return
+            return None
+        hit_runtime_id = None
         for event in self.state.handle_text(char,baseline_y=BASELINE):
+            if isinstance(event,HitEvent):
+                hit_runtime_id = event.runtime_id
             counts = self.counts(event.word_id,event.runtime_id,event.free_hint)
             if isinstance(event,MistakeEvent):
                 if counts:
@@ -239,12 +242,14 @@ class GameSession:
                 self.completed_word = {'word':event.answer,'runtime_id':event.runtime_id}
                 self.message = f'完成：{event.answer}'
         self.cleanup()
+        return hit_runtime_id
 
     def command(self, event):
         seq, kind = event['seq'], event['type']
+        result = {}
         self.last_contact = self.clock()
         if seq <= self.seq:
-            return  # Idempotent replay; acknowledgement contains authoritative last_seq.
+            return result  # Idempotent replay must not repeat a visual hit effect.
         if seq != self.seq+1:
             raise ValueError('操作序号不连续，请重新连接恢复进度')
         if self.status != 'running':
@@ -252,7 +257,9 @@ class GameSession:
         if self.pause_kind and kind not in ('voice_cancel','hint_end','close'):
             raise ValueError('请先结束录音或提示')
         if kind=='key':
-            self.input_char(event['char'])
+            hit_runtime_id = self.input_char(event['char'])
+            if hit_runtime_id:
+                result['hit_runtime_id'] = hit_runtime_id
         elif kind=='speed':
             self.state.set_speed_multiplier(event['value'])
         elif kind in ('retry','restart'):
@@ -314,6 +321,7 @@ class GameSession:
         self.store.conn.execute('INSERT INTO input_events(session_id,seq,kind,payload,occurred_at) VALUES(?,?,?,?,?)',
                                 (self.id,seq,kind,encoded(event),timestamp()))
         self.save()
+        return result
 
     def consume_retry(self, strict=True):
         daily = self.store.daily(self.day)

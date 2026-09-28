@@ -500,8 +500,8 @@ def create_app(data_dir=None, testing=False, services=None):
                     if command.type=='voice_start' and not app.state.services.configured('asr'):
                         raise ValueError('语音识别尚未配置，请先配置独立 ASR 服务')
                     with game.atomic():
-                        game.command(command.model_dump(exclude_none=True))
-                    await ws.send_json({'type':'ack','seq':game.seq})
+                        result = game.command(command.model_dump(exclude_none=True))
+                    await ws.send_json({'type':'ack','seq':game.seq,**result})
                 except (ValueError,ValidationError) as exc:
                     message = '无效的游戏操作' if isinstance(exc,(ValidationError,json.JSONDecodeError)) else str(exc)
                     await ws.send_json({'type':'error','message':message,'seq':game.seq})
