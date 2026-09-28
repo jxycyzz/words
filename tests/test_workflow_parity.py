@@ -133,16 +133,17 @@ def test_all_supported_round_policies_agree_in_report_and_mail(store,round_count
         clock.advance(1.1); session.last_contact=clock(); session.tick()
         type_word(session,'cat')
         clock.advance(); session.tick()
-    assert session.status=='completed'
+    assert session.status=='running' and session.state.current_round==round_count+1
     assert store.summary()['reward_money']==7.25
     assert store.report(today(),today())['reward_money']==7.25
+    session.command({'seq':session.seq+1,'type':'close'})
     payload=json.loads(store.rows('SELECT payload FROM settlement_events')[0]['payload'])
     validate_payload(payload)
     assert len(payload['reward_rounds'])==round_count
     assert payload['reward_points']==400
     message=message_for(payload,{'account':'sender@example.invalid','recipient':'parent@example.invalid'},1)
     assert '¥7.25/¥7.25' in message.get_content()
-    assert f'{round_count} 轮' in message.get_content()
+    assert f'{round_count} 个奖励槽位' in message.get_content()
 
 
 def test_close_snapshots_are_immutable_and_window_scoped(store):

@@ -77,10 +77,10 @@ class GameSession:
 
     @property
     def unlimited_rounds(self):
-        return self.mode == 'debug'
+        return self.review
 
     def reward_slot(self, number=None):
-        """Map unlimited test rounds onto the configured reward slots and cap."""
+        """Map continued review rounds onto the configured reward slots and cap."""
         number = int(number or self.state.current_round)
         limit = max(int(self.policy['round_count']),1)
         return (number-1) % limit + 1 if self.unlimited_rounds else number

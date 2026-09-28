@@ -35,15 +35,15 @@ def message_for(payload, config, event_id):
     reached=payload['completed_30_minutes']
     lines=['WordLearner 每日一键复习结算','',f"日期：{payload['day']}",f"关闭时间：{payload['closed_at']}",
         '状态：'+('已达到今日 30 分钟上限并关闭' if reached else '游戏界面已关闭，当前进度已保存'),
-        f"每日规则：{policy['word_count']} 个单词 × {policy['round_count']} 轮",
+        f"每日规则：{policy['word_count']} 个单词，{policy['round_count']} 个奖励槽位；复习不限轮",
         f"本次窗口复习记录：{payload['practiced']} 次",f"本次不重复单词：{payload['unique_words']} 个",
         f"本次正确记录：{payload['correct']} 次",f"本次复习正确率：{payload['accuracy']:.1f}%",'',
-        f"实际奖励记录（最多 {policy['round_count']} 轮）："]
+        f"各奖励槽位最佳实际记录（最多 {policy['round_count']} 项）："]
     for number, maximum in enumerate(policy['round_max_scores'],1):
         r=rounds.get(number)
         lines.append(f"第 {number} 轮：{r['reward_points']}/{r['max_score']} 分，字母准确率 {r['accuracy_percent']:.1f}%" if r else f'第 {number} 轮：未完成（0/{maximum} 分）')
     if len(rounds)<policy['round_count']:
-        lines.append('尚未完成全部轮次；上方金额和轮次为当前已保存的真实累计记录。')
+        lines.append('奖励槽位尚未全部产生记录；上方金额按当前已保存的真实记录计算。')
     def duration(s):
         h,left=divmod(int(s),3600); m,s=divmod(left,60)
         return f'{h:02}:{m:02}:{s:02}'

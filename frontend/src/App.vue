@@ -20,7 +20,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.6')
+const updated = ref(false), version = ref('0.2.7')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -190,7 +190,7 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
         </div>
       </form>
       <p class="status-text" role="status">{{ jobProgress || (busy ? '正在处理…' : status) }}</p>
-      <div class="today-card"><span>今日奖励金</span><strong>¥{{ Number(boot?.summary.reward_money || 0).toFixed(2) }}</strong><small>{{ boot?.summary.daily ? '当天规则已冻结' : '开始复习时冻结当天规则' }} · {{ boot?.policy.word_count || 75 }} 词 / {{ boot?.policy.round_count || 2 }} 轮</small></div>
+      <div class="today-card"><span>今日奖励金</span><strong>¥{{ Number(boot?.summary.reward_money || 0).toFixed(2) }}</strong><small>{{ boot?.summary.daily ? '当天规则已冻结' : '开始复习时冻结当天规则' }} · {{ boot?.policy.word_count || 75 }} 词 / {{ boot?.policy.round_count || 2 }} 个奖励槽位 · 复习不限轮</small></div>
       <p class="version">WordLearner B/S · {{ version }}</p>
     </aside>
     <main class="workspace">
@@ -218,8 +218,8 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
 
   <AppModal v-if="modal === 'parent'" title="家长设置" @close="modal = ''; error = ''">
     <p class="muted">设置每日复习量和奖励。当天首次开始后规则冻结，修改只影响尚未开始的新一天。</p>
-    <div v-if="boot?.summary.daily" class="info-box">今日使用：{{ boot.summary.daily.policy.word_count }} 词 · {{ boot.summary.daily.policy.round_count }} 轮 · 全对 ¥{{ boot.summary.daily.policy.perfect_reward_money.toFixed(2) }}</div>
-    <form class="settings-form" @submit.prevent="savePolicy"><label>{{ boot?.has_parent_password ? '家长密码' : '设置家长密码（至少 6 位）' }}<input v-model="parent.password" type="password" minlength="6" required autocomplete="current-password" /></label><label v-if="!boot?.has_parent_password">再次输入密码<input v-model="parent.confirmation" type="password" minlength="6" required autocomplete="new-password" /></label><label>每日单词数<input v-model.number="parent.word_count" type="number" min="10" max="200" required /><small>10–200 个；必选新词过多时可超过目标数量</small></label><label>每日轮数<select v-model.number="parent.round_count"><option :value="1">1 轮</option><option :value="2">2 轮</option><option :value="3">3 轮</option></select></label><label>全对奖励金额（元）<input v-model.number="parent.perfect_reward_money" type="number" min="0" max="100" step="0.01" required /></label><p v-if="error" role="alert" class="alert error">{{ error }}</p><div class="modal-actions"><button type="button" @click="modal = ''">取消</button><button class="primary" :disabled="busy">保存设置</button></div></form>
+    <div v-if="boot?.summary.daily" class="info-box">今日使用：{{ boot.summary.daily.policy.word_count }} 词 · {{ boot.summary.daily.policy.round_count }} 个奖励槽位 · 全对 ¥{{ boot.summary.daily.policy.perfect_reward_money.toFixed(2) }} · 复习不限轮</div>
+    <form class="settings-form" @submit.prevent="savePolicy"><label>{{ boot?.has_parent_password ? '家长密码' : '设置家长密码（至少 6 位）' }}<input v-model="parent.password" type="password" minlength="6" required autocomplete="current-password" /></label><label v-if="!boot?.has_parent_password">再次输入密码<input v-model="parent.confirmation" type="password" minlength="6" required autocomplete="new-password" /></label><label>每日单词数<input v-model.number="parent.word_count" type="number" min="10" max="200" required /><small>10–200 个；必选新词过多时可超过目标数量</small></label><label>奖励槽位<select v-model.number="parent.round_count"><option :value="1">1 个</option><option :value="2">2 个</option><option :value="3">3 个</option></select><small>复习可以继续多轮；每轮按顺序计入槽位，并取各槽位最佳实际成绩。</small></label><label>全对奖励金额（元）<input v-model.number="parent.perfect_reward_money" type="number" min="0" max="100" step="0.01" required /></label><p v-if="error" role="alert" class="alert error">{{ error }}</p><div class="modal-actions"><button type="button" @click="modal = ''">取消</button><button class="primary" :disabled="busy">保存设置</button></div></form>
   </AppModal>
 
   <AppModal v-if="modal === 'report'" title="每日报告" wide @close="modal = ''; error = ''">

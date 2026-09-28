@@ -1,10 +1,11 @@
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.clock import today
 from backend.main import create_app
-from backend.store import Store
+from backend.store import Store,encoded
 from tests.fakes import FakeServices
 from tests.test_server import game,type_word
 from tests.test_workflow_parity import wait_job
@@ -45,10 +46,11 @@ def test_no_microphone_mistakes_are_formal_actual_records():
     finally:store.conn.close()
 
 
-def test_no_microphone_test_mode_continues_beyond_configured_rounds_with_capped_reward():
+@pytest.mark.parametrize('mode',['review','debug'])
+def test_daily_review_modes_continue_beyond_configured_rounds_with_capped_reward(mode):
     store=Store(':memory:')
     try:
-        session,clock=game(store,'debug')
+        session,clock=game(store,mode)
         for completed_round in range(1,6):
             type_word(session,'cat')
             clock.advance(); session.tick()
@@ -64,6 +66,28 @@ def test_no_microphone_test_mode_continues_beyond_configured_rounds_with_capped_
         assert store.summary()['reward_money']==4
         assert session.view()['round_limit'] is None
     finally:store.conn.close()
+
+
+def test_voice_review_can_start_after_reward_slots_are_full(tmp_path):
+    store=Store(tmp_path/'wordlearner-web.sqlite3')
+    saved=store.save_word({'word':'bed','translation':'床','phonetic':'[bed]','created_on':today()})
+    store.prepare_daily({'word_count':75,'round_count':2,'perfect_reward_money':4})
+    result=encoded({'correct_chars':3,'total_chars':3,'duration_seconds':1,'accuracy_percent':100,
+                    'cpm':180,'speed_percent':100,'max_score':200,'reward_points':200})
+    with store.conn:
+        for slot in (1,2):
+            store.conn.execute('''INSERT INTO reward_attempts(day,session_id,round_number,attempt_number,result,recorded_at)
+                VALUES(?,?,?,?,?,?)''',(today(),'completed-earlier',slot,1,result,today()+'T10:00:00+08:00'))
+    store.conn.close()
+
+    with TestClient(create_app(tmp_path,testing=True,services=FakeServices())) as client:
+        client.headers['X-WordLearner-Request']='1'
+        response=client.post('/api/games',json={'mode':'review','word_ids':[saved['id']]})
+        assert response.status_code==200,response.text
+        prepared=wait_job(client,response.json()['job_id'])
+        assert prepared['status']=='completed',prepared
+        state=client.get('/api/games/'+prepared['result']['id']).json()
+        assert state['mode']=='review' and state['round_limit'] is None
 
 
 class NoAsrServices(FakeServices):

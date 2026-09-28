@@ -113,9 +113,10 @@ def test_two_round_rewards_and_report_agree(store):
     clock.advance(1.1); session.tick()
     type_word(session,'cat')
     clock.advance(); session.tick()
-    assert session.status=='completed'
+    assert session.status=='running' and session.state.current_round==3
     assert session.view()['reward_money']==4
     assert store.summary()['reward_money']==4
+    session.command({'seq':session.seq+1,'type':'close'})
     payload = json.loads(store.rows('SELECT payload FROM settlement_events')[0]['payload'])
     assert payload['reward_money']==4
     assert store.summary()['total_score']==20

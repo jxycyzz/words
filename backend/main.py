@@ -456,8 +456,6 @@ def create_app(data_dir=None, testing=False, services=None):
                 policy = daily['policy']
                 if daily['elapsed']>=1800:
                     raise ValueError('今日一键复习 30 分钟已用完')
-                if body.mode=='review' and len(store().best_rounds(today()))>=policy['round_count']:
-                    raise ValueError('今日所有复习轮次已完成')
                 ids = daily['word_ids']
             else:
                 ids = list(dict.fromkeys(body.word_ids))

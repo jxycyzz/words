@@ -156,12 +156,12 @@ function draw() {
     ctx.strokeStyle = '#ffd60a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, baseline); ctx.lineTo(width, baseline); ctx.stroke()
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = 'bold 17px SimSun, serif'; ctx.fillStyle = '#f5f5f7'
     if (s) {
-      const hud = [s.mode === 'debug' ? '免麦克风复习·不限轮' : s.mode === 'review' ? '一键复习' : '普通练习', `生命 ${s.lives}`, `第 ${s.round} 轮`, `进度 ${s.processed}/${s.total}`, `速度 ${s.speed.toFixed(1)}x`]
+      const hud = [s.mode === 'debug' ? '免麦克风复习·不限轮' : s.mode === 'review' ? '一键复习·不限轮' : '普通练习', `生命 ${s.lives}`, `第 ${s.round} 轮`, `进度 ${s.processed}/${s.total}`, `速度 ${s.speed.toFixed(1)}x`]
       if (!isReviewMode(s.mode)) hud.push(`本局 ${s.score}`, `总分 ${s.total_score}`)
       ctx.fillText(hud.join('    '), 18, 16)
       if (isReviewMode(s.mode)) {
         const details = [`已获得 ¥${s.reward_money.toFixed(2)}；每日上限 ¥${s.perfect_reward_money.toFixed(2)}；本轮预计 +¥${Math.max(0, s.reward_money - s.saved_reward_money).toFixed(2)}`, `用时 ${duration(s.elapsed_seconds)}`]
-        if (s.mode === 'debug') details.push('免朗读锁定，不限轮；每日奖励封顶')
+        details.push(s.mode === 'debug' ? '免朗读锁定，不限轮；每日奖励封顶' : '不限轮；每日奖励封顶')
         if (s.remaining_seconds !== null && s.remaining_seconds <= 300) details.push(`倒计时 ${duration(s.remaining_seconds)}`)
         if (recording.value) details.push('录音中')
         else if (processing.value) details.push('语音识别中')
