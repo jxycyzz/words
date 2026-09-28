@@ -37,6 +37,13 @@ def environment_flag(name):
     return os.environ.get(name,'').strip().casefold() in ('1','true','yes','on')
 
 
+def page_token(value):
+    value = str(value or '')
+    if 16 <= len(value) <= 64 and all(c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in value):
+        return value
+    return None
+
+
 def configured_hosts(testing=False):
     hosts = ['127.0.0.1','localhost','[::1]']
     hosts.extend(host.strip() for host in os.environ.get('WORDLEARNER_ALLOWED_HOSTS','').split(',') if host.strip())
@@ -87,6 +94,8 @@ def create_app(data_dir=None, testing=False, services=None):
             app.state.store = store
             app.state.services = services or Integrations(directory if testing else ROOT)
             app.state.game = None
+            app.state.game_socket = None
+            app.state.game_lease = None
             app.state.password_failures = []
             app.state.last_presence = None
             app.state.mail = MailWorker(store,app.state.services.config.get('email',{}))
@@ -150,6 +159,10 @@ def create_app(data_dir=None, testing=False, services=None):
         if not cookie or len(cookie)!=43 or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in cookie):
             cookie = secrets.token_urlsafe(32)
         request.state.owner = cookie
+        page = page_token(request.headers.get('x-wordlearner-page'))
+        request.state.page_explicit = page is not None
+        if page:
+            request.state.owner = page
         response = await call_next(request)
         if cookie!=request.cookies.get(COOKIE):
             response.set_cookie(COOKIE,cookie,httponly=True,samesite='strict',max_age=365*86400,
@@ -178,6 +191,25 @@ def create_app(data_dir=None, testing=False, services=None):
         if not game or game.id!=game_id or game.owner!=owner:
             raise HTTPException(404,'游戏会话不存在或不属于当前浏览器')
         return game
+
+    async def transfer_game(game, owner):
+        """Move an unfinished game to the latest page without changing results."""
+        old_socket = app.state.game_socket
+        changed = game.owner != owner or game.connected or old_socket is not None
+        if changed:
+            with game.atomic():
+                if game.connected:
+                    game.disconnect()
+                game.owner = owner
+                game.message = '游戏已由当前页面接管，其他页面已自动退出'
+                game.save()
+                store().log_operation('game_transferred','未完成游戏已由当前页面接管；学习结果未改变',session_id=game.id)
+        app.state.game_socket = None
+        app.state.game_lease = None
+        if old_socket is not None:
+            with contextlib.suppress(RuntimeError,WebSocketDisconnect):
+                await old_socket.close(code=4001,reason='游戏已由另一页面接管')
+        return changed
 
     def require_idle():
         game = app.state.game
@@ -229,6 +261,15 @@ def create_app(data_dir=None, testing=False, services=None):
             'policy':ParentSettingsManager(store()).current_policy(),
             'has_parent_password':ParentSettingsManager(store()).has_password(),
             'active_game':{'id':game.id,'mode':game.mode,'owned':game.owner==request.state.owner} if resumable else None}
+
+    @app.post('/api/session/claim')
+    async def claim_session(request: Request):
+        if not request.state.page_explicit:
+            raise HTTPException(400,'缺少页面标识')
+        game = app.state.game
+        resumable = game and game.status in ('running','paused')
+        transferred = await transfer_game(game,request.state.owner) if resumable else False
+        return {'transferred':transferred,'active_game':{'id':game.id,'mode':game.mode,'owned':True} if resumable else None}
 
     @app.post('/api/presence')
     async def presence(body: StrictModel):
@@ -417,19 +458,32 @@ def create_app(data_dir=None, testing=False, services=None):
         if remote_blocked or urlparse(ws.headers.get('origin','')).netloc!=ws.headers.get('host'):
             await ws.close(code=1008)
             return
+        lease = secrets.token_urlsafe(18)
         try:
-            game = game_for(game_id,ws.cookies.get(COOKIE))
+            owner = page_token(ws.query_params.get('page')) or ws.cookies.get(COOKIE)
+            game = game_for(game_id,owner)
             with game.atomic():
                 game.connect()
         except (HTTPException,ValueError):
             await ws.close(code=1008)
             return
-        await ws.accept()
+        app.state.game_socket = ws
+        app.state.game_lease = lease
+        try:
+            await ws.accept()
+        except RuntimeError:
+            if app.state.game_lease==lease:
+                app.state.game_socket = None
+                app.state.game_lease = None
+                with game.atomic():
+                    game.disconnect()
+            return
         async def sender():
-            while game.connected:
+            while game.connected and app.state.game_lease==lease:
                 await ws.send_json({'type':'state','state':game.view()})
                 await asyncio.sleep(.05)
-            await ws.close(code=1000)
+            if app.state.game_lease==lease:
+                await ws.close(code=1000)
         sender_task = asyncio.create_task(sender())
         try:
             async for raw in ws.iter_text():
@@ -457,8 +511,11 @@ def create_app(data_dir=None, testing=False, services=None):
             sender_task.cancel()
             with contextlib.suppress(asyncio.CancelledError,RuntimeError,WebSocketDisconnect):
                 await sender_task
-            with game.atomic():
-                game.disconnect()
+            if app.state.game_lease==lease:
+                app.state.game_socket = None
+                app.state.game_lease = None
+                with game.atomic():
+                    game.disconnect()
 
     dist = ROOT/'frontend/dist'
     if (dist/'assets').exists():

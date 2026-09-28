@@ -1,7 +1,11 @@
+const PAGE_STORAGE_KEY = 'wordlearner-page-id'
+export const pageId = sessionStorage.getItem(PAGE_STORAGE_KEY) || crypto.randomUUID().replaceAll('-', '')
+sessionStorage.setItem(PAGE_STORAGE_KEY, pageId)
+
 export async function api<T = any>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch('/api' + path, {
     ...options, credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', 'X-WordLearner-Request': '1', ...options.headers },
+    headers: { 'Content-Type': 'application/json', 'X-WordLearner-Request': '1', 'X-WordLearner-Page': pageId, ...options.headers },
   })
   const result = await response.json()
   if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '输入格式不正确，请检查后重试')

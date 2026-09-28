@@ -389,7 +389,7 @@ class GameSession:
             'history_baseline':self.history_baseline,'window_closed':self.window_closed,
             'random_state':self.state.random.getstate()}
         self.store.conn.execute('''INSERT INTO sessions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-            mode=excluded.mode,status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at''',
+            owner=excluded.owner,mode=excluded.mode,status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at''',
             (self.id,self.owner,self.mode,self.day,self.status,encoded(payload),timestamp()))
         self.last_save = now
 

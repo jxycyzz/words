@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { api, duration, type GameView } from '../api'
+import { api, duration, pageId, type GameView } from '../api'
 import { Recorder } from '../recorder'
 import { wordLayouts, fitText, type WordLayout } from '../gameLayout'
 
 const props = defineProps<{ id: string; asr: boolean }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; revoked: [] }>()
 const state = ref<GameView | null>(null), canvas = ref<HTMLCanvasElement>(), stage = ref<HTMLDivElement>()
 const notice = ref(''), tooltip = ref('')
 let noticeTimer = 0, lastNotice = '', layout: WordLayout[] = [], width = 980, height = 630
@@ -28,7 +28,7 @@ function command(event: Record<string, any>) {
 function connect() {
   if (stopped || socket?.readyState === WebSocket.OPEN) return
   error.value = ''; queue = []; inflight = null
-  socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/games/${props.id}/socket`)
+  socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/games/${props.id}/socket?page=${encodeURIComponent(pageId)}`)
   socket.onopen = () => { connected.value = true; canvas.value?.focus(); socket?.send(JSON.stringify({ type: 'heartbeat' })) }
   socket.onmessage = event => {
     const msg = JSON.parse(event.data)
@@ -56,7 +56,11 @@ function connect() {
       error.value = msg.message; sequence = msg.seq; inflight = null; queue = []; closing = false
     }
   }
-  socket.onclose = () => { connected.value = false; queue = []; inflight = null; cancelRecording(); if (!stopped) error.value = '连接已暂停，已保存确认过的进度。点击恢复连接继续。' }
+  socket.onclose = event => {
+    connected.value = false; queue = []; inflight = null; cancelRecording()
+    if (!stopped && event.code === 4001) { stopped = true; emit('revoked'); return }
+    if (!stopped) error.value = '连接已暂停，已保存确认过的进度。点击恢复连接继续。'
+  }
   socket.onerror = () => { error.value = '无法连接游戏，请检查服务是否运行，或关闭另一个游戏页面' }
 }
 function cancelRecording() {

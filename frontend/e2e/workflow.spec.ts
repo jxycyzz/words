@@ -6,6 +6,7 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/')
+  const ownerHeaders = { 'X-WordLearner-Page': await page.evaluate(() => sessionStorage.getItem('wordlearner-page-id') || '') }
   await expect(page.getByText('从第一个单词开始')).toBeVisible()
   for (const [word, translation] of [['cat', '猫'], ['sun', '太阳']]) {
     await page.getByLabel('英文', { exact: true }).fill(word)
@@ -25,8 +26,8 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await page.getByRole('button', { name: '开始练习', exact: true }).click()
   const jobId = (await (await created).json()).job_id
   let id = ''
-  await expect.poll(async () => { const job = await (await page.request.get(`/api/jobs/${jobId}`)).json(); id = job.result.id; return job.status }).toBe('completed')
-  const game = async () => (await page.request.get(`/api/games/${id}`)).json()
+  await expect.poll(async () => { const job = await (await page.request.get(`/api/jobs/${jobId}`, { headers: ownerHeaders })).json(); id = job.result.id; return job.status }).toBe('completed')
+  const game = async () => (await page.request.get(`/api/games/${id}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await game()).active.length).toBe(1)
   await page.locator('canvas').click({ position: { x: 400, y: 400 } })
   await page.keyboard.type('c', { delay: 90 })
@@ -57,16 +58,16 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await page.getByRole('button', { name: '历史记录', exact: true }).click()
   await expect(page.locator('.report-table')).toContainText('cat')
   await page.getByRole('button', { name: '关闭窗口' }).click()
-  const beforeDebug = await (await page.request.get('/api/bootstrap')).json()
-  const historyBefore = await (await page.request.get('/api/reports')).json()
+  const beforeDebug = await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()
+  const historyBefore = await (await page.request.get('/api/reports', { headers: ownerHeaders })).json()
   await page.getByLabel('免麦克风复习模式').check()
   await page.getByLabel('选择 sun', { exact: true }).check()
   const debugCreated = page.waitForResponse(response => response.url().endsWith('/api/games') && response.request().method() === 'POST')
   await page.getByRole('button', { name: '开始练习', exact: true }).click()
   const debugJobId = (await (await debugCreated).json()).job_id
   let debugId = ''
-  await expect.poll(async () => { const job = await (await page.request.get(`/api/jobs/${debugJobId}`)).json(); debugId = job.result.id; return job.status }).toBe('completed')
-  const debugGame = async () => (await page.request.get(`/api/games/${debugId}`)).json()
+  await expect.poll(async () => { const job = await (await page.request.get(`/api/jobs/${debugJobId}`, { headers: ownerHeaders })).json(); debugId = job.result.id; return job.status }).toBe('completed')
+  const debugGame = async () => (await page.request.get(`/api/games/${debugId}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await debugGame()).active.length).toBe(1)
   expect((await debugGame()).mode).toBe('debug')
   await expect(page.locator('.voice-button')).toHaveCount(0)
@@ -81,8 +82,8 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   expect((await debugGame()).saved_reward_money).toBe(4)
   await page.getByRole('button', { name: '保存并返回' }).click()
   await expect(page.getByRole('heading', { name: '单词学习', exact: true })).toBeVisible()
-  const afterDebug = await (await page.request.get('/api/bootstrap')).json()
+  const afterDebug = await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()
   expect(afterDebug.summary.total_score).toBe(beforeDebug.summary.total_score + 20)
-  expect((await (await page.request.get('/api/reports')).json()).history_total).toBe(historyBefore.history_total + 2)
+  expect((await (await page.request.get('/api/reports', { headers: ownerHeaders })).json()).history_total).toBe(historyBefore.history_total + 2)
   expect(errors).toEqual([])
 })

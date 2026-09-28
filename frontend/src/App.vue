@@ -20,7 +20,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.2')
+const updated = ref(false), version = ref('0.2.3')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -73,6 +73,10 @@ async function refresh() {
   }
   await loadWords()
 }
+async function claimCurrentPage() {
+  await api('/session/claim', { method: 'POST', body: '{}' })
+  await refresh()
+}
 function toggle(id: number) { const next = new Set(selected.value); next.has(id) ? next.delete(id) : next.add(id); selected.value = next }
 function chooseAll() { selected.value = new Set([...selected.value, ...words.value.map(w => w.id)]) }
 function clearForm() { Object.assign(form, { word: '', translation: '', phonetic: '', created_on: boot.value?.summary.today || localDate() }); editId.value = null }
@@ -111,6 +115,11 @@ async function startGame(mode: 'practice' | 'review' | 'debug') {
   })
 }
 async function gameClosed() { gameId.value = ''; await run(refresh) }
+function gameRevoked() {
+  gameId.value = ''
+  if (boot.value) boot.value.active_game = null
+  error.value = '游戏已由另一页面接管，本页已自动退出。'
+}
 function parentSettings() {
   Object.assign(parent, boot.value?.policy || {}); parent.password = ''; parent.confirmation = ''; error.value = ''; modal.value = 'parent'
 }
@@ -152,12 +161,12 @@ async function batchCards() {
     }
   } catch (e) { error.value = (e as Error).message } finally { aiBusy.value = false }
 }
-onMounted(() => { void run(refresh); void presence(); void checkVersion(); presenceTimer = window.setInterval(presence, 3000); versionTimer = window.setInterval(checkVersion, 30000) })
+onMounted(() => { void run(claimCurrentPage); void presence(); void checkVersion(); presenceTimer = window.setInterval(presence, 3000); versionTimer = window.setInterval(checkVersion, 30000) })
 onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval(versionTimer) })
 </script>
 
 <template>
-  <GamePanel v-if="gameId" :id="gameId" :asr="!!boot?.capabilities.asr" @close="gameClosed" />
+  <GamePanel v-if="gameId" :id="gameId" :asr="!!boot?.capabilities.asr" @close="gameClosed" @revoked="gameRevoked" />
   <div v-else class="app-shell">
     <aside class="entry-panel">
       <div class="brand"><span class="brand-mark">W</span><span>WordLearner <small>网页版</small></span></div>

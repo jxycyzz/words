@@ -16,6 +16,7 @@ test('desktop canvas layout: long definitions stay in distinct lanes and survive
     }
   })
   await page.goto('/')
+  const ownerHeaders = { 'X-WordLearner-Page': await page.evaluate(() => sessionStorage.getItem('wordlearner-page-id') || '') }
   const definitions = [
     ['bed', 'n. 床，床铺，床位；底部，基座，花坛，苗圃；河床，岩层；固定，嵌入，与某人上床'],
     ['car', 'n. 汽车，轿车，车厢；电梯厢，吊舱；交通工具，铁路车辆，赛车和其他各种车型'],
@@ -29,8 +30,8 @@ test('desktop canvas layout: long definitions stay in distinct lanes and survive
   await page.getByRole('button', { name: '全选可见' }).click()
   await page.getByRole('button', { name: '开始练习', exact: true }).click()
   await expect(page.locator('canvas')).toBeVisible()
-  const id = (await (await page.request.get('/api/bootstrap')).json()).active_game.id
-  const game = async () => (await page.request.get(`/api/games/${id}`)).json()
+  const id = (await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()).active_game.id
+  const game = async () => (await page.request.get(`/api/games/${id}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await game()).active.length, { timeout: 15000 }).toBe(3)
   const check = async () => {
     const info = await page.evaluate(() => {

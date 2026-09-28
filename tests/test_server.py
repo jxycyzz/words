@@ -4,6 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from backend.clock import today
 from backend.domain.parent_settings import ParentSettingsManager, normalize_review_policy
@@ -276,6 +277,50 @@ def test_game_session_owner_and_input_contract(client):
     client.cookies.clear()
     assert client.get(f'/api/games/{game_id}').status_code==404
     assert client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]}).status_code==409
+
+
+def test_latest_page_claim_revokes_old_socket_without_changing_results(client):
+    client.app.state.services=FakeServices()
+    client.app.state.jobs.services=client.app.state.services
+    w=api_word(client)
+    page_a,page_b='a'*32,'b'*32
+    first={'X-WordLearner-Page':page_a}
+    second={'X-WordLearner-Page':page_b}
+    created=client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]},headers=first).json()
+    for _ in range(100):
+        job=client.get(f"/api/jobs/{created['job_id']}",headers=first).json()
+        if job['status'] in ('completed','failed'): break
+        time.sleep(.02)
+    assert job['status']=='completed',job
+    game_id=job['result']['id']
+    before_state=client.get(f'/api/games/{game_id}',headers=first).json()
+    before_history=client.get('/api/reports',headers=first).json()['history_total']
+    with client.websocket_connect(f'/api/games/{game_id}/socket?page={page_a}',headers={'Origin':'http://testserver'}) as ws:
+        assert ws.receive_json()['type']=='state'
+        claimed=client.post('/api/session/claim',json={},headers=second)
+        assert claimed.status_code==200
+        assert claimed.json()=={'transferred':True,'active_game':{'id':game_id,'mode':'practice','owned':True}}
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True: ws.receive_json()
+        assert closed.value.code==4001
+    game=client.app.state.game
+    assert game.owner==page_b and game.status=='paused' and not game.connected
+    assert client.get(f'/api/games/{game_id}',headers=first).status_code==404
+    assert client.get(f'/api/games/{game_id}',headers=second).status_code==200
+    after_state=client.get(f'/api/games/{game_id}',headers=second).json()
+    for field in ('last_seq','score','total_score','reward_money','saved_reward_money','processed','total'):
+        assert after_state[field]==before_state[field]
+    assert client.get('/api/reports',headers=second).json()['history_total']==before_history
+
+
+def test_transferred_page_owner_persists_for_restart(store):
+    session,_=game(store,'practice')
+    session.owner='b'*32
+    with store.conn: session.save()
+    row=store.rows('SELECT * FROM sessions WHERE id=?',(session.id,))[0]
+    restored=GameSession.restore(store,row)
+    assert row['owner']=='b'*32
+    assert restored.owner=='b'*32
 
 
 def test_parent_api_rejects_bad_password(client):

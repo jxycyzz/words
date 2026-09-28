@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test'
 test('browser microphone WAV, voice lock, real typing, close settlement and resume', async ({ page }) => {
   await page.request.post('/api/test-reset', { headers: { 'X-WordLearner-Request': '1' } })
   await page.goto('/')
+  const ownerHeaders = { 'X-WordLearner-Page': await page.evaluate(() => sessionStorage.getItem('wordlearner-page-id') || '') }
   // This server is the isolated tests.e2e_app; never the user's running server.
   const headers = { 'X-WordLearner-Request': '1' }
   const existing = await (await page.request.get('/api/words')).json()
@@ -11,9 +12,9 @@ test('browser microphone WAV, voice lock, real typing, close settlement and resu
   await page.reload()
   await page.getByRole('button', { name: '一键复习', exact: true }).first().click()
   await expect(page.locator('canvas')).toBeVisible()
-  const bootstrap = await (await page.request.get('/api/bootstrap')).json()
+  const bootstrap = await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()
   const id = bootstrap.active_game.id
-  const game = async () => (await page.request.get(`/api/games/${id}`)).json()
+  const game = async () => (await page.request.get(`/api/games/${id}`, { headers: ownerHeaders })).json()
   await expect.poll(async () => (await game()).active.length).toBe(1)
   await page.locator('canvas').focus()
   await page.keyboard.type('voiceword')
