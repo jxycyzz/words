@@ -1,0 +1,31 @@
+services:
+  words:
+    build:
+      context: .
+    container_name: words-app
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 256m
+    pids_limit: 128
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    environment:
+      WORDLEARNER_BS_DATA_DIR: /app/data
+      WORDLEARNER_PUBLIC_MODE: "1"
+      WORDLEARNER_ALLOWED_HOSTS: words.rfdsx.online
+      WORDLEARNER_COOKIE_SECURE: "1"
+    volumes:
+      - ./data:/app/data
+      - ./config.json:/app/config.json:ro
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+    name: runfuda_runfuda-internal

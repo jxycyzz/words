@@ -1,0 +1,6 @@
+{
+  "ai": {"base_url": "", "model": "", "api_key": ""},
+  "asr": {"base_url": "", "model": "", "api_key": ""},
+  "translation": {"app_id": "", "secret_key": ""},
+  "email": {"enabled": false, "host": "", "port": 465, "account": "", "recipient": "", "auth_code": ""}
+}
