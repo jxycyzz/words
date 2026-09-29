@@ -24,7 +24,8 @@ def validate_payload(payload):
     money=round(float(policy['perfect_reward_money'])*min(max(payload['reward_points'],0),policy['reward_point_ceiling'])/policy['reward_point_ceiling'],2)
     if money!=payload['reward_money']:
         raise ValueError('奖励金与当天冻结规则不符')
-    if not 0<=payload['correct']<=payload['practiced'] or payload['review_elapsed_seconds']<0 or payload['usage_seconds']<0:
+    cumulative_review=payload.get('review_usage_seconds',payload['usage_seconds'])
+    if not 0<=payload['correct']<=payload['practiced'] or payload['review_elapsed_seconds']<0 or cumulative_review<0:
         raise ValueError('结算统计数据无效')
 
 
@@ -47,10 +48,13 @@ def message_for(payload, config, event_id):
     def duration(s):
         h,left=divmod(int(s),3600); m,s=divmod(left,60)
         return f'{h:02}:{m:02}:{s:02}'
+    cumulative_review=payload.get('review_usage_seconds')
+    cumulative_line=(f"一键复习累计用时：{duration(cumulative_review)}" if cumulative_review is not None
+                     else f"软件累计使用时长：{duration(payload['usage_seconds'])}")
     lines.extend([f"当日奖励总分：{payload['reward_points']}/{policy['reward_point_ceiling']}",
         f"当日奖励金：¥{payload['reward_money']:.2f}/¥{policy['perfect_reward_money']:.2f}",
         f"今日一键复习用时：{duration(payload['review_elapsed_seconds'])}",
-        f"软件累计使用时长：{duration(payload['usage_seconds'])}",'','此邮件由 WordLearner 在一键复习游戏界面关闭后自动发送。'])
+        cumulative_line,'','此邮件由 WordLearner 在一键复习游戏界面关闭后自动发送。'])
     message=EmailMessage()
     message['Subject']=f"WordLearner 一键复习关闭结算 - {payload['day']}"
     message['From']=config['account']; message['To']=config['recipient']

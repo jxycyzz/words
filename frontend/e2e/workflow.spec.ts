@@ -8,6 +8,7 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await page.goto('/')
   const ownerHeaders = { 'X-WordLearner-Page': await page.evaluate(() => sessionStorage.getItem('wordlearner-page-id') || '') }
   await expect(page.getByText('从第一个单词开始')).toBeVisible()
+  await expect(page.locator('.summary-line')).toContainText('累计复习 00:00')
   for (const [word, translation] of [['cat', '猫'], ['sun', '太阳']]) {
     await page.getByLabel('英文', { exact: true }).fill(word)
     await page.getByLabel('释义', { exact: true }).fill(translation)
@@ -59,6 +60,7 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await expect(page.locator('.report-table')).toContainText('cat')
   await page.getByRole('button', { name: '关闭窗口' }).click()
   const beforeDebug = await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()
+  expect(beforeDebug.summary.review_usage_seconds).toBe(0)
   const historyBefore = await (await page.request.get('/api/reports', { headers: ownerHeaders })).json()
   await page.getByLabel('免麦克风复习模式').check()
   await page.getByLabel('选择 sun', { exact: true }).check()
@@ -85,6 +87,8 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await expect(page.getByRole('heading', { name: '单词学习', exact: true })).toBeVisible()
   const afterDebug = await (await page.request.get('/api/bootstrap', { headers: ownerHeaders })).json()
   expect(afterDebug.summary.total_score).toBe(beforeDebug.summary.total_score + 20)
+  expect(afterDebug.summary.review_usage_seconds).toBeGreaterThan(0)
+  expect(afterDebug.summary.usage_seconds).toBe(afterDebug.summary.review_usage_seconds)
   expect((await (await page.request.get('/api/reports', { headers: ownerHeaders })).json()).history_total).toBe(historyBefore.history_total + 2)
   expect(errors).toEqual([])
 })

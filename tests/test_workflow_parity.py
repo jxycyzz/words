@@ -141,9 +141,14 @@ def test_all_supported_round_policies_agree_in_report_and_mail(store,round_count
     validate_payload(payload)
     assert len(payload['reward_rounds'])==round_count
     assert payload['reward_points']==400
+    assert payload['review_usage_seconds']==payload['usage_seconds']==int(store.review_usage_seconds())
     message=message_for(payload,{'account':'sender@example.invalid','recipient':'parent@example.invalid'},1)
     assert '¥7.25/¥7.25' in message.get_content()
     assert f'{round_count} 个奖励槽位' in message.get_content()
+    assert '一键复习累计用时' in message.get_content()
+    assert '软件累计使用时长' not in message.get_content()
+    legacy_payload={key:value for key,value in payload.items() if key!='review_usage_seconds'}
+    assert '软件累计使用时长' in message_for(legacy_payload,{'account':'sender@example.invalid','recipient':'parent@example.invalid'},2).get_content()
 
 
 def test_close_snapshots_are_immutable_and_window_scoped(store):
@@ -208,12 +213,24 @@ def test_incomplete_mail_payload_is_blocked():
     with pytest.raises(ValueError): validate_payload({'day':today()})
 
 
-def test_presence_does_not_accept_client_duration(tmp_path):
+def test_presence_does_not_count_page_time_or_accept_client_duration(tmp_path):
+    seed=Store(tmp_path/'wordlearner-web.sqlite3')
+    with seed.conn:
+        seed.set_setting('usage_seconds','99999')
+        seed.conn.execute("INSERT INTO daily_review(day,policy,word_ids,elapsed) VALUES(?,?,?,?)",
+                          ('2026-01-01','{}','[]',61.5))
+    seed.conn.close()
     with TestClient(create_app(tmp_path,testing=True)) as client:
         client.headers['X-WordLearner-Request']='1'
         assert client.post('/api/presence',json={'seconds':99999}).status_code==422
-        assert client.post('/api/presence',json={}).status_code==200
-        assert client.get('/api/bootstrap').json()['summary']['usage_seconds']<2
+        first=client.post('/api/presence',json={}).json()
+        second=client.post('/api/presence',json={}).json()
+        assert first['review_usage_seconds']==second['review_usage_seconds']==61.5
+        summary=client.get('/api/bootstrap').json()['summary']
+        assert summary['review_usage_seconds']==summary['usage_seconds']==61.5
+    check=Store(tmp_path/'wordlearner-web.sqlite3')
+    assert check.get_setting('usage_seconds')=='99999'
+    check.conn.close()
 
 
 def test_disabled_mail_is_visible_and_never_attempts_delivery(tmp_path):

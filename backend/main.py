@@ -128,7 +128,6 @@ def create_app(data_dir=None, testing=False, services=None):
             app.state.game_socket = None
             app.state.game_lease = None
             app.state.password_failures = []
-            app.state.last_presence = None
             app.state.mail = MailWorker(store,app.state.services.config.get('email',{}))
             app.state.jobs = JobWorker(store,app.state.services,prepared_game)
             def backup():
@@ -318,14 +317,9 @@ def create_app(data_dir=None, testing=False, services=None):
 
     @app.post('/api/presence')
     async def presence(body: StrictModel):
-        # Measure only intervals confirmed by consecutive browser heartbeats.
-        # Never assume the page remains open for a future timeout period.
-        now=time.monotonic()
-        previous=app.state.last_presence
-        app.state.last_presence=now
-        if previous is not None and 0<=now-previous<=6:
-            with store().conn: store().add_usage(now-previous)
-        return {'usage_seconds':float(store().get_setting('usage_seconds') or 0),'mail_status':mail_status()}
+        # Presence refreshes status only. Review duration is measured by the authoritative game tick.
+        review_usage = store().review_usage_seconds()
+        return {'review_usage_seconds':review_usage,'usage_seconds':review_usage,'mail_status':mail_status()}
 
     @app.get('/api/jobs/{job_id}')
     async def get_job(job_id: int,request: Request):

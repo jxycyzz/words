@@ -90,7 +90,9 @@ def test_desktop_database_import_is_audited_complete_and_idempotent(tmp_path):
     assert merged['practice_count']==3 and merged['correct_count']==2
     assert merged['translation']=='猫咪' and merged['due_on']=='2026-02-02'
     assert store.summary()['total_score']==110
-    assert store.summary()['usage_seconds']==15
+    assert store.summary()['review_usage_seconds']==60
+    assert store.summary()['usage_seconds']==60
+    assert store.get_setting('usage_seconds')=='15.0'  # Legacy whole-app time is retained but not displayed.
     report=store.report('2026-01-02','2026-01-02')
     assert report['history_total']==2
     assert report['daily'][0]['reward_points']==45

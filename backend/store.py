@@ -246,14 +246,19 @@ class Store:
         total = self.conn.execute('SELECT coalesce(sum(points),0) FROM score_events').fetchone()[0]
         review = self.daily()
         preview_points, points = self.daily_points(today())
+        review_usage = self.review_usage_seconds()
         return {'word_count':len(self.words()),'total_score':total,'review_seconds':review['elapsed'] if review else 0,
                 'reward_points':points,'reward_money':self.money(today(),points),
                 'saved_reward_points':points,'preview_reward_money':self.money(today(),preview_points),
-                'usage_seconds':float(self.get_setting('usage_seconds') or 0),
+                'review_usage_seconds':review_usage,
+                # Backward-compatible API alias. Its meaning is cumulative one-click review gameplay time.
+                'usage_seconds':review_usage,
                 'daily':review,'today':today()}
 
-    def add_usage(self, seconds):
-        self.set_setting('usage_seconds',str(float(self.get_setting('usage_seconds') or 0)+max(seconds,0)))
+    def review_usage_seconds(self):
+        """Return persisted active gameplay time for review/debug sessions across all days."""
+        value = self.conn.execute('SELECT coalesce(sum(elapsed),0) FROM daily_review').fetchone()[0]
+        return max(float(value or 0),0)
 
     def wrong_words(self, start, end, limit=12):
         return self.rows('''SELECT word_id,word,translation,count(*) AS wrong_count FROM review_history
@@ -292,12 +297,14 @@ class Store:
         rounds=list(self.best_rounds(day).values())
         points=sum(r['reward_points'] for r in rounds)
         correct=sum(r['correct'] for r in history)
+        review_usage=int(self.review_usage_seconds())
         return {'day':day,'session_id':session_id,'review_scope':'current_window','review_history_after_id':after_id,
             'practiced':len(history),'unique_words':len({r['word_id'] for r in history}),'correct':correct,
             'accuracy':round(correct/len(history)*100) if history else 0,
             'reward_rounds':rounds,'reward_points':points,'reward_money':self.money(day,points),
             'review_policy':daily['policy'],'review_elapsed_seconds':int(daily['elapsed']),
-            'usage_seconds':int(float(self.get_setting('usage_seconds') or 0)),
+            'review_usage_seconds':review_usage,
+            'usage_seconds':review_usage,
             'completed_30_minutes':daily['elapsed']>=1800,'close_trigger':trigger,'closed_at':timestamp()}
 
     def daily_points(self, day):
