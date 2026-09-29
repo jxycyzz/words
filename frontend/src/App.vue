@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, localDate, duration, type Word } from './api'
+import { api, localDate, duration, durationHms, type Word } from './api'
 import AppModal from './components/AppModal.vue'
 import GamePanel from './components/GamePanel.vue'
 import { useWordLookup } from './useWordLookup'
@@ -20,7 +20,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.11')
+const updated = ref(false), version = ref('0.2.12')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -171,7 +171,7 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
     <aside class="entry-panel">
       <div class="brand"><span class="brand-mark">W</span><span>WordLearner <small>网页版</small></span></div>
       <h1>单词学习</h1>
-      <p class="summary-line">总分 <b>{{ boot?.summary.total_score || 0 }}</b><span>·</span>累计复习 <b>{{ duration(boot?.summary.review_usage_seconds || 0) }}</b></p>
+      <p class="summary-line">总分 <b>{{ boot?.summary.total_score || 0 }}</b><span>·</span>累计复习 <b>{{ durationHms(boot?.summary.review_usage_seconds || 0) }}</b></p>
       <label class="debug-toggle"><input type="checkbox" v-model="debugMode" @change="saveDebugPreference" /> 免麦克风复习模式</label>
       <p v-if="debugMode" class="debug-description">测试期间不限轮次、无需朗读锁定；实际打字、计时、正确率、总分、奖励和结算邮件均按正式复习记录，每日奖励不超过家长设置上限。</p>
       <form class="entry-form" @submit.prevent="save">

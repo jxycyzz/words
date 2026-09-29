@@ -23,6 +23,13 @@ export function duration(seconds: number) {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
+export function durationHms(seconds: number) {
+  const s = Math.floor(seconds || 0)
+  const hours = Math.floor(s / 3600)
+  const minutes = Math.floor((s % 3600) / 60)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
+
 export interface Word {
   id: number; word: string; translation: string; phonetic: string; created_on: string
   practice_count: number; accuracy: number; mastery: number; due_on: string; archived: number

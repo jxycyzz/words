@@ -8,7 +8,7 @@ test('isolated browser: words, policy, actual typing, reload recovery, reports, 
   await page.goto('/')
   const ownerHeaders = { 'X-WordLearner-Page': await page.evaluate(() => sessionStorage.getItem('wordlearner-page-id') || '') }
   await expect(page.getByText('从第一个单词开始')).toBeVisible()
-  await expect(page.locator('.summary-line')).toContainText('累计复习 00:00')
+  await expect(page.locator('.summary-line')).toContainText('累计复习 00:00:00')
   for (const [word, translation] of [['cat', '猫'], ['sun', '太阳']]) {
     await page.getByLabel('英文', { exact: true }).fill(word)
     await page.getByLabel('释义', { exact: true }).fill(translation)
