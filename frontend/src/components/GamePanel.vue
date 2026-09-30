@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { api, duration, pageId, type GameView } from '../api'
+import { api, downloadFile, duration, pageId, type GameView } from '../api'
 import { Recorder, listAudioInputs, type AudioInputOption, type CaptureProgress } from '../recorder'
 import { wordLayouts, fitText, type WordLayout } from '../gameLayout'
 
 const props = defineProps<{ id: string; asr: boolean }>()
-const emit = defineEmits<{ close: [summary: { mode: string; day: string }]; revoked: [] }>()
+const emit = defineEmits<{ close: [summary: { mode: string; day: string; exported: boolean }]; revoked: [] }>()
 const state = ref<GameView | null>(null), canvas = ref<HTMLCanvasElement>(), stage = ref<HTMLDivElement>()
 const notice = ref(''), tooltip = ref('')
 let noticeTimer = 0, lastNotice = '', layout: WordLayout[] = [], width = 980, height = 630
 const connected = ref(false), error = ref(''), recording = ref(false), processing = ref(false)
 const voiceTranscript = ref(''), voiceStatus = ref('尚未识别；按住麦克风按钮开始测试')
 const voiceMatched = ref<boolean | null>(null), voiceAudioBytes = ref(0)
+const exportStatus = ref(''), exporting = ref(false), exported = ref(false)
 const audioInputs = ref<AudioInputOption[]>([])
 const selectedAudioInput = ref(localStorage.getItem('wordlearner-audio-input') || '')
 const voiceDevice = ref(''), voiceLevel = ref(0), voiceDuration = ref(0), voiceFrames = ref(0)
@@ -19,9 +20,23 @@ const voiceStartupMs = ref(0), voiceRecognitionMs = ref<number | null>(null), vo
 let socket: WebSocket | null = null, heartbeat = 0, animation = 0, lastSpoken = '', stopped = false
 let sequence = 0, inflight: Record<string, any> | null = null, queue: Record<string, any>[] = []
 let recorder: Recorder | null = null, voiceHeld = false, pendingVoiceStop = false, recordTimer = 0, warmTimer = 0, closing = false
+let observedRound = 0
 let beams: { at: number; x: number; y: number }[] = []
 const wordPositions = new Map<string, { x: number; y: number }>()
 const isReviewMode = (mode?: string) => mode === 'review' || mode === 'debug'
+const exportKey = () => `wordlearner-daily-words-exported:${props.id}`
+async function exportDailyWords(automatic = false) {
+  if (!isReviewMode(state.value?.mode) || exporting.value) return
+  if (automatic && sessionStorage.getItem(exportKey())) return
+  exporting.value = true; exportStatus.value = automatic ? '本轮已完成，正在生成当天单词 Excel…' : '正在生成当天单词 Excel…'
+  try {
+    const filename = await downloadFile(`/games/${encodeURIComponent(props.id)}/daily-words.xlsx`)
+    exported.value = true; sessionStorage.setItem(exportKey(), '1')
+    exportStatus.value = `已下载 ${filename}；如果浏览器未显示文件，请点击“下载当天单词”重试`
+  } catch (reason) {
+    exportStatus.value = `自动下载未成功：${(reason as Error).message}；请点击“下载当天单词”重试`
+  } finally { exporting.value = false }
+}
 function sendNext() {
   if (!connected.value || inflight || !queue.length) return
   inflight = { ...queue.shift(), seq: sequence + 1 }
@@ -41,6 +56,9 @@ function connect() {
     const msg = JSON.parse(event.data)
     if (msg.type === 'state') {
       state.value = msg.state
+      const previousRound = observedRound
+      observedRound = Number(msg.state.round || 0)
+      if (isReviewMode(msg.state.mode) && observedRound > 1 && (previousRound === 0 || observedRound > previousRound)) void exportDailyWords(true)
       if (msg.state.message !== lastNotice) {
         lastNotice = msg.state.message; notice.value = lastNotice
         clearTimeout(noticeTimer); noticeTimer = window.setTimeout(() => { notice.value = '' }, 2600)
@@ -62,7 +80,7 @@ function connect() {
         if (position) beams.push({ at: performance.now(), ...position })
       }
       inflight = null; sendNext()
-      if (justClosed && closing) emit('close', { mode: state.value?.mode || '', day: state.value?.day || '' })
+      if (justClosed && closing) emit('close', { mode: state.value?.mode || '', day: state.value?.day || '', exported: exported.value })
     } else if (msg.type === 'error') {
       const failedCommand = inflight?.type
       error.value = msg.message; sequence = msg.seq; inflight = null; queue = []; closing = false
@@ -231,7 +249,7 @@ function blur() {
 function visibility() { if (document.hidden) { blur(); socket?.close() } }
 function devicesChanged() { void refreshAudioInputs() }
 function close() {
-  if (!connected.value || ['completed', 'closed'].includes(state.value?.status || '')) { emit('close', { mode: state.value?.mode || '', day: state.value?.day || '' }); return }
+  if (!connected.value || ['completed', 'closed'].includes(state.value?.status || '')) { emit('close', { mode: state.value?.mode || '', day: state.value?.day || '', exported: exported.value }); return }
   if (isReviewMode(state.value?.mode) && !confirm('退出将保存进度，并按原规则记一次本轮重试。确认退出？')) return
   blur(); closing = true; command({ type: 'close' })
 }
@@ -339,8 +357,10 @@ onUnmounted(() => {
       <div class="spacer" />
       <button v-if="!connected" class="primary" @click="connect">恢复连接</button>
       <template v-else-if="state?.status === 'running'"><button @click="command({ type: 'restart' })">重新开始</button><button @click="command({ type: 'retry' })">重试本轮</button></template>
+      <button v-if="isReviewMode(state?.mode)" type="button" :disabled="exporting" @click="exportDailyWords(false)">{{ exporting ? '生成中…' : '下载当天单词' }}</button>
       <button @click="close">保存并返回</button>
     </div>
+    <p v-if="isReviewMode(state?.mode)" class="export-status" role="status" aria-live="polite">{{ exportStatus || '完成第一轮后自动下载 Excel；也可随时点击“下载当天单词”' }}</p>
     <div v-if="isReviewMode(state?.mode)" class="voice-transcript" role="status" aria-live="polite" data-testid="voice-transcript">
       <div class="voice-result-row">
         <span class="voice-transcript-label">

@@ -21,7 +21,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.15')
+const updated = ref(false), version = ref('0.2.16')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -135,10 +135,10 @@ async function startGame(mode: 'practice' | 'review' | 'debug', scope = reviewSc
     } finally { jobProgress.value = '' }
   })
 }
-async function gameClosed(summary: { mode: string; day: string }) {
+async function gameClosed(summary: { mode: string; day: string; exported: boolean }) {
   const closedId=gameId.value
   let exported='', exportError=''
-  if (closedId && ['review','debug'].includes(summary.mode)) {
+  if (closedId && ['review','debug'].includes(summary.mode) && !summary.exported) {
     try { exported=await downloadFile(`/games/${encodeURIComponent(closedId)}/daily-words.xlsx`) }
     catch (e) { exportError=(e as Error).message }
   }

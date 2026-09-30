@@ -1,6 +1,6 @@
 {
   "name": "wordlearner-bs",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "private": true,
   "type": "module",
   "scripts": {"dev": "vite --host 127.0.0.1", "build": "vue-tsc --noEmit && vite build", "test:e2e": "playwright test"},
