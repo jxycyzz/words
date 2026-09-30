@@ -20,6 +20,11 @@ RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -r requirement
     && mkdir -p /app/data \
     && chown -R wordlearner:wordlearner /app/data
 
+# Keep optional spreadsheet support in its own layer so a small export change does
+# not invalidate the larger, already verified production dependency layer.
+COPY requirements.spreadsheet.txt ./
+RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -r requirements.spreadsheet.txt
+
 COPY backend/ ./backend/
 COPY scripts/ ./scripts/
 COPY frontend/public/ ./frontend/public/
