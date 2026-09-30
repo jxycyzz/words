@@ -21,16 +21,30 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.13')
+const updated = ref(false), version = ref('0.2.14')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
 }
 function applyUpdate() { window.location.reload() }
-async function waitJob(id: number, progress = false) {
+async function waitJob(id: number, showProgress = false, progressLabel = '复习') {
+  const startedAt = Date.now()
   while (!disposed) {
     const job = await api(`/jobs/${id}`)
-    if (progress) jobProgress.value = `正在检查学习卡 ${job.progress} / ${job.total || '…'}`
+    if (showProgress) {
+      const completed = Number(job.progress || 0), total = Number(job.total || 0)
+      let detail = total ? `${completed} / ${total}` : '正在建立清单'
+      if (total && completed < total) {
+        if (completed) {
+          const elapsed = Math.max(1, (Date.now() - startedAt) / 1000)
+          const remaining = Math.max(1, Math.ceil(elapsed * (total - completed) / completed))
+          detail += remaining >= 60 ? `，预计还需约 ${Math.ceil(remaining / 60)} 分钟` : `，预计还需约 ${remaining} 秒`
+        } else {
+          detail += '，首次检查需生成学习卡'
+        }
+      }
+      jobProgress.value = `正在准备${progressLabel}：检查学习卡 ${detail}`
+    }
     if (job.status === 'completed') return job.result
     if (job.status === 'failed') throw new Error(job.error || '后台任务失败')
     await new Promise(resolve => setTimeout(resolve, 500))
@@ -113,8 +127,12 @@ async function archive() {
 async function startGame(mode: 'practice' | 'review' | 'debug', scope = reviewScope.value) {
   await run(async () => {
     const actualMode = debugMode.value ? 'debug' : mode
-    const result = await api('/games', { method: 'POST', body: JSON.stringify({ mode: actualMode, word_ids: [...selected.value], review_scope: scope }) })
-    try { gameId.value = result.id || (await waitJob(result.job_id, true)).id } finally { jobProgress.value = '' }
+    const progressLabel = scope === 'grade8_upper' ? '初二上复习' : mode === 'practice' ? '已选单词练习' : '全部词库复习'
+    jobProgress.value = `正在准备${progressLabel}…`
+    try {
+      const result = await api('/games', { method: 'POST', body: JSON.stringify({ mode: actualMode, word_ids: [...selected.value], review_scope: scope }) })
+      gameId.value = result.id || (await waitJob(result.job_id, true, progressLabel)).id
+    } finally { jobProgress.value = '' }
   })
 }
 async function gameClosed() { gameId.value = ''; await run(refresh) }

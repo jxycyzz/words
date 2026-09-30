@@ -8,6 +8,8 @@ from .store import encoded
 
 
 class JobWorker:
+    PREPARE_CONCURRENCY=4
+
     def __init__(self,store,services,on_prepared):
         self.store,self.services,self.on_prepared=store,services,on_prepared
 
@@ -36,19 +38,30 @@ class JobWorker:
             self.update(job_id,total=len(tasks))
             previous=json.loads(job['result'])
             results=previous.get('items',[]); failures=previous.get('failures',[])
-            for index,(word_id,kind) in enumerate(tasks):
-                if index<job['progress']: continue
+            async def run_task(word_id,kind):
+                try:
+                    word=self.store.get_word(word_id)
+                    if word['archived']:
+                        return None,None
+                    result=await self.services.ai(self.store,kind,word_id)
+                    return {'word_id':word_id,'word':word['word'],'kind':kind,**result},None
+                except ValueError as exc:
+                    return None,{'word_id':word_id,'kind':kind,'message':str(exc)}
+
+            batch_size=self.PREPARE_CONCURRENCY if job['kind']=='prepare_game' else 1
+            start_index=min(int(job['progress']),len(tasks))
+            for batch_start in range(start_index,len(tasks),batch_size):
                 if job['kind']!='prepare_game' and self.store.rows("SELECT id FROM background_jobs WHERE kind='prepare_game' AND status='pending'"):
                     self.update(job_id,status='pending')
                     return
-                try:
-                    word=self.store.get_word(word_id)
-                    if word['archived']:continue
-                    result=await self.services.ai(self.store,kind,word_id)
-                    results.append({'word_id':word_id,'word':word['word'],'kind':kind,**result})
-                except ValueError as exc:
-                    failures.append({'word_id':word_id,'message':str(exc)})
-                self.update(job_id,progress=index+1,result=encoded({'items':results,'failures':failures}))
+                batch=tasks[batch_start:batch_start+batch_size]
+                outcomes=await asyncio.gather(*(run_task(word_id,kind) for word_id,kind in batch))
+                for item,failure in outcomes:
+                    if item: results.append(item)
+                    if failure: failures.append(failure)
+                # Only persist a completed contiguous batch so a process restart can
+                # safely resume at progress without skipping an unfinished card.
+                self.update(job_id,progress=batch_start+len(batch),result=encoded({'items':results,'failures':failures}))
             if job['kind']=='prepare_game':
                 if failures:raise ValueError('以下单词未完成 AI 查词，已停止进入练习：'+ '；'.join(f['message'] for f in failures[:3]))
                 latest=self.store.rows('SELECT payload FROM background_jobs WHERE id=?',(job_id,))

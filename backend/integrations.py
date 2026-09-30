@@ -23,10 +23,14 @@ from datetime import date, timedelta
 
 
 class Integrations:
+    AI_RETRY_ATTEMPTS = 3
+
     def __init__(self, root: Path):
         config_path = root/'config.json'
         self.config = json.loads(config_path.read_text(encoding='utf-8-sig')) if config_path.exists() else {}
-        self.active_ai = asyncio.Semaphore(2)
+        # Game preparation may check many uncached cards. Four concurrent calls
+        # keep that wait bounded while still limiting pressure on the provider.
+        self.active_ai = asyncio.Semaphore(4)
         self.active_asr = asyncio.Semaphore(1)
         self.inflight = {}
         self.lookup_cache = OrderedDict()
@@ -134,13 +138,24 @@ class Integrations:
                 fn,args = service.generate_daily_report,(start,end,context)
             else:
                 fn,args = service.chat,(question,context)
-            result = await asyncio.to_thread(fn,*args)
+            for attempt in range(self.AI_RETRY_ATTEMPTS):
+                result = await asyncio.to_thread(fn,*args)
+                if not result.error or not self._retryable_ai_error(result.error) or attempt+1>=self.AI_RETRY_ATTEMPTS:
+                    break
+                await asyncio.sleep(.5*(2**attempt))
             if result.error or not result.content.strip():
                 # Provider errors can contain credentials or internal URLs; never forward them.
                 raise ValueError('AI 服务暂不可用，请检查配置或稍后重试')
             with store.conn:
                 store.conn.execute('INSERT OR REPLACE INTO ai_cache(cache_key,content,created_at,word_id,kind) VALUES(?,?,?,?,?)',(key,result.content,timestamp(),word_id,task))
             return {'content':result.content,'cached':False}
+
+    @staticmethod
+    def _retryable_ai_error(message):
+        text=str(message).casefold()
+        return 'ai 返回内容为空' in text or any(marker in text for marker in (
+            '429','500','502','503','504','timeout','timed out','connection',
+            'temporarily unavailable','暂时不可用','连接失败','连接超时'))
 
     async def lookup(self, word):
         word = ' '.join(word.strip().split())

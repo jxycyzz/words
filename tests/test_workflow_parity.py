@@ -85,6 +85,38 @@ def test_preheat_does_not_freeze_tomorrow_policy(store):
     assert store.daily((date.fromisoformat(today())+timedelta(days=1)).isoformat()) is None
 
 
+def test_prepare_game_checks_cards_with_bounded_concurrency(store):
+    class SlowServices(FakeServices):
+        def __init__(self):
+            super().__init__()
+            self.active=0
+            self.max_active=0
+
+        async def ai(self,store,task,word_id=None,*args,**kwargs):
+            self.active+=1
+            self.max_active=max(self.max_active,self.active)
+            try:
+                await asyncio.sleep(.02)
+                return await super().ai(store,task,word_id,*args,**kwargs)
+            finally:
+                self.active-=1
+
+    words=[word(store,f'word{index}') for index in range(6)]
+    payload={'word_ids':[item['id'] for item in words]}
+    job_id=store.enqueue_job('prepare_game',payload)
+    store.conn.commit()
+    services=SlowServices()
+    worker=JobWorker(store,services,lambda prepared:{'id':'prepared','count':len(prepared['word_ids'])})
+
+    asyncio.run(worker.once())
+
+    job=store.rows('SELECT * FROM background_jobs WHERE id=?',(job_id,))[0]
+    assert job['status']=='completed'
+    assert job['progress']==job['total']==6
+    assert json.loads(job['result'])=={'id':'prepared','count':6}
+    assert services.max_active==JobWorker.PREPARE_CONCURRENCY
+
+
 def test_real_letter_mistakes_use_one_based_positions(store):
     session,clock=game(store,'practice')
     for _ in range(3): session.command({'seq':session.seq+1,'type':'key','char':'x'})
@@ -120,6 +152,25 @@ def test_ai_cache_is_invalidated_only_for_edited_word(store,tmp_path):
         await services.ai(store,'note',one['id'])
     asyncio.run(run())
     assert calls==['cat','bed','cat']
+
+
+def test_ai_retries_a_transient_provider_failure(store,tmp_path):
+    entry=word(store)
+    services=Integrations(tmp_path)
+    calls=[]
+    class Service:
+        model='test'; base_url='https://example.invalid'
+        def generate_word_note(self,word):
+            calls.append(word.word)
+            if len(calls)==1:
+                return SimpleNamespace(content='',error='AI 请求失败：503 Service Unavailable')
+            return SimpleNamespace(content='学习卡',error='')
+    services.service=lambda kind:Service()
+
+    result=asyncio.run(services.ai(store,'note',entry['id']))
+
+    assert result['content']=='学习卡'
+    assert calls==['cat','cat']
 
 
 @pytest.mark.parametrize('round_count',[1,2,3])
