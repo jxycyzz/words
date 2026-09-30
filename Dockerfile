@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir --default-timeout=120 --retries 10 -r requirement
     && chown -R wordlearner:wordlearner /app/data
 
 COPY backend/ ./backend/
+COPY scripts/ ./scripts/
 COPY frontend/public/ ./frontend/public/
 COPY --from=frontend-build /source/frontend/dist/ ./frontend/dist/
 

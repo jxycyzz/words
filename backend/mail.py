@@ -34,7 +34,9 @@ def message_for(payload, config, event_id):
     policy=payload['review_policy']
     rounds={r['round_number']:r for r in payload['reward_rounds']}
     reached=payload['completed_30_minutes']
+    scope_label={'all':'全部词库','grade8_upper':'初二上'}.get(payload.get('selection_scope','all'),payload.get('selection_scope','全部词库'))
     lines=['WordLearner 每日一键复习结算','',f"日期：{payload['day']}",f"关闭时间：{payload['closed_at']}",
+        f"复习范围：{scope_label}",
         '状态：'+('已达到今日 30 分钟上限并关闭' if reached else '游戏界面已关闭，当前进度已保存'),
         f"每日规则：{policy['word_count']} 个单词，{policy['round_count']} 个奖励槽位；复习不限轮",
         f"本次窗口复习记录：{payload['practiced']} 次",f"本次不重复单词：{payload['unique_words']} 个",

@@ -5,6 +5,7 @@ import json
 import math
 import random
 import sqlite3
+import unicodedata
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -13,6 +14,12 @@ from .domain.parent_settings import normalize_review_policy
 from .domain.rules import sm2_next_state
 from .domain.models import Word
 from .domain.review_selection import ReviewSelector
+
+
+REVIEW_SCOPES = {
+    'all': '全部词库',
+    'grade8_upper': '初二上',
+}
 
 
 def encoded(value):
@@ -86,6 +93,19 @@ class Store:
                 import_id INTEGER NOT NULL REFERENCES migration_imports(id),
                 source_word_id INTEGER NOT NULL, target_word_id INTEGER NOT NULL REFERENCES words(id),
                 PRIMARY KEY(import_id,source_word_id));
+            CREATE TABLE IF NOT EXISTS word_tags(
+                word_id INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE,
+                tag_key TEXT NOT NULL, tagged_at TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(word_id,tag_key));
+            CREATE INDEX IF NOT EXISTS word_tags_tag ON word_tags(tag_key,word_id);
+            CREATE TABLE IF NOT EXISTS daily_review_scopes(
+                day TEXT NOT NULL, scope_key TEXT NOT NULL, word_ids TEXT NOT NULL,
+                prepared_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY(day,scope_key));
+            CREATE TABLE IF NOT EXISTS catalog_imports(
+                id INTEGER PRIMARY KEY, tag_key TEXT NOT NULL, source_label TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL, source_bytes INTEGER NOT NULL,
+                imported_at TEXT NOT NULL, summary TEXT NOT NULL);
         ''')
         additions = {'settlement_events':{'attempts':'INTEGER NOT NULL DEFAULT 0','last_error':"TEXT NOT NULL DEFAULT ''",'next_attempt':'REAL NOT NULL DEFAULT 0','sent_at':"TEXT NOT NULL DEFAULT ''"},
                      'ai_cache':{'word_id':'INTEGER','kind':"TEXT NOT NULL DEFAULT ''"}}
@@ -134,10 +154,13 @@ class Store:
         age = max((target - date.fromisoformat(word['last_practiced_at'][:10])).days, 0)
         return math.exp(-age / max(word['interval_days'], 1))
 
-    def decorate(self, word):
+    def decorate(self, word, tags=None):
         acc = word['correct_count'] / word['practice_count'] if word['practice_count'] else 0
+        if tags is None:
+            tags=[row['tag_key'] for row in self.rows('SELECT tag_key FROM word_tags WHERE word_id=? ORDER BY tag_key',(word['id'],))]
         return {**word, 'accuracy': round(acc * 100),
-                'mastery': round((self.retention(word) * .65 + acc * .35) * 100)}
+                'mastery': round((self.retention(word) * .65 + acc * .35) * 100),
+                'tags':tags,'tag_labels':[REVIEW_SCOPES.get(tag,tag) for tag in tags]}
 
     def words(self, search='', start='', end='', include_archived=False):
         clauses, args = ['1=1'], []
@@ -152,8 +175,11 @@ class Store:
         if end:
             clauses.append('created_on<=?')
             args.append(end)
-        return [self.decorate(w) for w in self.rows(
-            'SELECT * FROM words WHERE ' + ' AND '.join(clauses) + ' ORDER BY created_on DESC,id DESC', args)]
+        rows=self.rows('SELECT * FROM words WHERE ' + ' AND '.join(clauses) + ' ORDER BY created_on DESC,id DESC', args)
+        tag_map={}
+        for tag in self.rows('SELECT word_id,tag_key FROM word_tags ORDER BY tag_key'):
+            tag_map.setdefault(tag['word_id'],[]).append(tag['tag_key'])
+        return [self.decorate(w,tag_map.get(w['id'],[])) for w in rows]
 
     def save_word(self, payload, word_id=None):
         word = ' '.join(payload['word'].strip().split())
@@ -172,9 +198,69 @@ class Store:
                 self.conn.execute('UPDATE words SET word=?,word_key=?,translation=?,phonetic=?,created_on=?,updated_at=? WHERE id=?', (*values, word_id))
         except sqlite3.IntegrityError:
             raise ValueError('该单词已存在（包括已归档词条），请勿重复录入') from None
+        if payload.get('tags') is not None:
+            self.set_word_tags(word_id,payload['tags'],'manual')
         self.conn.execute('DELETE FROM ai_cache WHERE word_id=?',(word_id,))
         self.log_operation('word_saved', f'保存词条：{word}', word_id=word_id)
         return self.get_word(word_id)
+
+    def set_word_tags(self, word_id, tags, source='manual'):
+        tags=list(dict.fromkeys(str(tag).strip() for tag in tags if str(tag).strip()))
+        unknown=[tag for tag in tags if tag not in REVIEW_SCOPES or tag=='all']
+        if unknown:
+            raise ValueError('不支持的单词分类：'+','.join(unknown))
+        self.conn.execute('DELETE FROM word_tags WHERE word_id=?',(word_id,))
+        self.conn.executemany('INSERT INTO word_tags(word_id,tag_key,tagged_at,source) VALUES(?,?,?,?)',
+                              [(word_id,tag,timestamp(),source) for tag in tags])
+
+    @staticmethod
+    def canonical_word(value):
+        value=unicodedata.normalize('NFKC',str(value or '')).translate(str.maketrans({'’':"'",'‘':"'",'`':"'"}))
+        return ' '.join(value.strip().split()).casefold()
+
+    def import_tagged_words(self, entries, tag_key, source_label, source_sha256, source_bytes):
+        if tag_key not in REVIEW_SCOPES or tag_key=='all':
+            raise ValueError('不支持的教材分类')
+        existing={}
+        for row in self.rows('SELECT * FROM words ORDER BY id'):
+            existing.setdefault(self.canonical_word(row['word']),row)
+        inserted=matched=filled=0
+        imported_ids=[]
+        import_day=today()
+        for item in entries:
+            word=' '.join(str(item.get('word') or '').strip().split())
+            key=self.canonical_word(word)
+            if not key:
+                continue
+            translation=str(item.get('translation') or '').strip()
+            phonetic=str(item.get('phonetic') or '').strip()
+            row=existing.get(key)
+            if row:
+                word_id=row['id']; matched+=1
+                new_translation=row['translation'] or translation
+                new_phonetic=row['phonetic'] or phonetic
+                if new_translation!=row['translation'] or new_phonetic!=row['phonetic']:
+                    self.conn.execute('UPDATE words SET translation=?,phonetic=?,updated_at=? WHERE id=?',
+                                      (new_translation,new_phonetic,timestamp(),word_id))
+                    self.conn.execute('DELETE FROM ai_cache WHERE word_id=?',(word_id,))
+                    filled+=1
+            else:
+                cur=self.conn.execute('''INSERT INTO words(word,word_key,translation,phonetic,created_on,updated_at,due_on)
+                    VALUES(?,?,?,?,?,?,?)''',(word,key,translation,phonetic,import_day,timestamp(),import_day))
+                word_id=cur.lastrowid; inserted+=1
+                row={'id':word_id,'word':word,'word_key':key,'translation':translation,'phonetic':phonetic}
+                existing[key]=row
+            self.conn.execute('''INSERT INTO word_tags(word_id,tag_key,tagged_at,source) VALUES(?,?,?,?)
+                ON CONFLICT(word_id,tag_key) DO UPDATE SET source=excluded.source''',
+                (word_id,tag_key,timestamp(),source_label))
+            imported_ids.append(word_id)
+        unique_ids=list(dict.fromkeys(imported_ids))
+        summary={'source_rows':len(entries),'unique_words':len(unique_ids),'inserted':inserted,
+                 'matched':matched,'filled_missing_fields':filled,'tagged':len(unique_ids)}
+        self.conn.execute('''INSERT INTO catalog_imports(tag_key,source_label,source_sha256,source_bytes,imported_at,summary)
+            VALUES(?,?,?,?,?,?)''',(tag_key,source_label,source_sha256,int(source_bytes),timestamp(),encoded(summary)))
+        self.log_operation('catalog_imported',f'教材词表已导入：{REVIEW_SCOPES[tag_key]}',tag_key=tag_key,**summary)
+        return summary
 
     def archive(self, ids):
         for word_id in ids:
@@ -196,23 +282,66 @@ class Store:
             result[key] = json.loads(result[key])
         return result
 
-    def prepare_daily(self, policy):
+    def review_scopes(self):
+        counts={r['tag_key']:r['count'] for r in self.rows('''SELECT tag_key,count(*) AS count FROM word_tags t
+            JOIN words w ON w.id=t.word_id WHERE w.archived=0 GROUP BY tag_key''')}
+        return [{'key':'all','label':REVIEW_SCOPES['all'],'count':len(self.words())}]+[
+            {'key':key,'label':label,'count':counts.get(key,0)} for key,label in REVIEW_SCOPES.items() if key!='all'
+        ]
+
+    def daily_scope(self, day, scope_key):
+        row=self.conn.execute('SELECT * FROM daily_review_scopes WHERE day=? AND scope_key=?',(day,scope_key)).fetchone()
+        if row:
+            result=dict(row); result['word_ids']=json.loads(result['word_ids']); return result
+        if scope_key=='all':
+            daily=self.daily(day)
+            if daily and daily['word_ids']:
+                return {'day':day,'scope_key':'all','word_ids':daily['word_ids']}
+        return None
+
+    def prepare_daily(self, policy, scope_key='all'):
+        if scope_key not in REVIEW_SCOPES:
+            raise ValueError('不支持的复习范围')
         day = today()
         existing = self.daily(day)
         policy = existing['policy'] if existing else normalize_review_policy(policy)
         # Preserve the desktop overdue roll-forward behavior for prospective schedules.
         self.conn.execute('UPDATE words SET due_on=?,updated_at=? WHERE archived=0 AND due_on<?', (day,timestamp(),day))
         words = self.words()
+        if scope_key!='all':
+            tagged={row['word_id'] for row in self.rows('SELECT word_id FROM word_tags WHERE tag_key=?',(scope_key,))}
+            words=[word for word in words if word['id'] in tagged]
         if not words:
-            raise ValueError('当前没有可复习的单词，请先录入词条')
+            raise ValueError(f'{REVIEW_SCOPES[scope_key]}范围内没有可复习的单词')
         domain_words=[Word(**{k:w[k] for k in Word.__dataclass_fields__}) for w in words]
         selector=ReviewSelector(domain_words,date.fromisoformat(day))
-        chosen=selector.select(existing['word_ids'] if existing else [],policy['word_count'])
+        scope_state=self.daily_scope(day,scope_key)
+        if scope_key=='all':
+            chosen=selector.select(scope_state['word_ids'] if scope_state else [],policy['word_count'])
+        elif scope_state:
+            valid={word.id for word in domain_words}
+            chosen=[word_id for word_id in scope_state['word_ids'] if word_id in valid][:policy['word_count']]
+            ranked=selector.list_review_words(limit=len(domain_words),randomize=False,required_created_dates=[])
+            for word in ranked:
+                if len(chosen)>=policy['word_count']:
+                    break
+                if word.id not in chosen:
+                    chosen.append(word.id)
+        else:
+            chosen=[word.id for word in selector.list_review_words(
+                limit=policy['word_count'],randomize=True,required_created_dates=[])]
         self.conn.execute('''INSERT INTO daily_review(day,policy,word_ids) VALUES(?,?,?)
-            ON CONFLICT(day) DO UPDATE SET word_ids=excluded.word_ids''', (day,encoded(policy),encoded(chosen)))
+            ON CONFLICT(day) DO NOTHING''', (day,encoded(policy),encoded(chosen) if scope_key=='all' else '[]'))
+        if scope_key=='all':
+            self.conn.execute('UPDATE daily_review SET word_ids=? WHERE day=?',(encoded(chosen),day))
+        now=timestamp()
+        self.conn.execute('''INSERT INTO daily_review_scopes(day,scope_key,word_ids,prepared_at,updated_at)
+            VALUES(?,?,?,?,?) ON CONFLICT(day,scope_key) DO UPDATE SET word_ids=excluded.word_ids,updated_at=excluded.updated_at''',
+            (day,scope_key,encoded(chosen),(scope_state.get('prepared_at') or now) if scope_state else now,now))
         if not existing:
             self.log_operation('daily_policy_frozen','当天复习规则已冻结',day=day,policy=policy)
-        return self.daily(day)
+        result=self.daily(day)
+        return {**result,'word_ids':chosen,'scope_key':scope_key,'scope_label':REVIEW_SCOPES[scope_key]}
 
     def answer(self, word_id, correct, session_id, mode):
         w = self.get_word(word_id)
@@ -289,7 +418,7 @@ class Store:
         cursor=self.conn.execute('INSERT INTO background_jobs(kind,payload,created_at,updated_at) VALUES(?,?,?,?)',(kind,text,timestamp(),timestamp()))
         return cursor.lastrowid
 
-    def settlement_payload(self, day, session_id, after_id, trigger):
+    def settlement_payload(self, day, session_id, after_id, trigger, selection_scope='all'):
         daily=self.daily(day)
         if daily is None:
             raise ValueError('结算缺少当天冻结规则，停止发送')
@@ -298,7 +427,8 @@ class Store:
         points=sum(r['reward_points'] for r in rounds)
         correct=sum(r['correct'] for r in history)
         review_usage=int(self.review_usage_seconds())
-        return {'day':day,'session_id':session_id,'review_scope':'current_window','review_history_after_id':after_id,
+        return {'day':day,'session_id':session_id,'review_scope':'current_window','selection_scope':selection_scope,
+            'review_history_after_id':after_id,
             'practiced':len(history),'unique_words':len({r['word_id'] for r in history}),'correct':correct,
             'accuracy':round(correct/len(history)*100) if history else 0,
             'reward_rounds':rounds,'reward_points':points,'reward_money':self.money(day,points),
@@ -331,14 +461,21 @@ class Store:
             rounds = list(self.best_rounds(day).values())
             preview_points,points = self.daily_points(day)
             state = self.daily(day)
+            scope_rows=self.rows('SELECT scope_key,word_ids FROM daily_review_scopes WHERE day=? ORDER BY scope_key',(day,))
+            scope_lists=[{'key':row['scope_key'],'label':REVIEW_SCOPES.get(row['scope_key'],row['scope_key']),
+                          'word_ids':json.loads(row['word_ids'])} for row in scope_rows]
+            review_ids=list(dict.fromkeys(word_id for scope in scope_lists for word_id in scope['word_ids']))
+            if not review_ids and state:
+                review_ids=state['word_ids']
             required_dates={day,(date.fromisoformat(day)-timedelta(days=1)).isoformat()}
-            required=sum(self.get_word(i)['created_on'] in required_dates for i in state['word_ids']) if state else 0
+            required=sum(self.get_word(i)['created_on'] in required_dates for i in review_ids)
             daily.append({'day':day,'practiced':count,'unique_words':len({h['word_id'] for h in items}),
                 'correct':correct,'accuracy':round(correct/count*100) if count else 0,
                 'reward_points':points,'reward_money':self.money(day,points),'rounds':rounds,
                 'saved_reward_points':points,'preview_reward_money':self.money(day,preview_points),
-                'elapsed_seconds':state['elapsed'] if state else 0,'review_count':len(state['word_ids']) if state else 0,
-                'required_count':required,'old_count':len(state['word_ids'])-required if state else 0,
+                'elapsed_seconds':state['elapsed'] if state else 0,'review_count':len(review_ids),
+                'review_scopes':[{'key':scope['key'],'label':scope['label'],'count':len(scope['word_ids'])} for scope in scope_lists],
+                'required_count':required,'old_count':len(review_ids)-required,
                 'review_policy':state['policy'] if state else None})
         words = self.words()
         buckets={'high':0,'medium':0,'low':0,'new':0,'due':0,'total':len(words)}

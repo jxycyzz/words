@@ -13,6 +13,7 @@ class WordInput(StrictModel):
     translation: str = Field(default='',max_length=1000)
     phonetic: str = Field(default='',max_length=200)
     created_on: date
+    tags: list[str] | None = Field(default=None,max_length=20)
 
 
 class WordIds(StrictModel):
@@ -22,6 +23,7 @@ class WordIds(StrictModel):
 class StartGame(StrictModel):
     mode: Literal['practice','review','debug']
     word_ids: list[int] = Field(default_factory=list,max_length=1000)
+    review_scope: Literal['all','grade8_upper'] = 'all'
 
 
 class PasswordInput(StrictModel):

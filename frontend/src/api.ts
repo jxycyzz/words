@@ -33,10 +33,11 @@ export function durationHms(seconds: number) {
 export interface Word {
   id: number; word: string; translation: string; phonetic: string; created_on: string
   practice_count: number; accuracy: number; mastery: number; due_on: string; archived: number
+  tags: string[]; tag_labels: string[]
 }
 
 export interface GameView {
-  id: string; mode: string; voice_required: boolean; status: string; day: string; last_seq: number; round: number
+  id: string; mode: string; selection_scope: string; selection_scope_label: string; voice_required: boolean; status: string; day: string; last_seq: number; round: number
   round_limit: number | null; lives: number; score: number; speed: number; processed: number; total: number
   accuracy: number; elapsed_seconds: number; reward_money: number; saved_reward_money: number
   perfect_reward_money: number; pause: string | null; voice_ticket: string | null; locked: string | null

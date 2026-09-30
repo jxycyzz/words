@@ -259,7 +259,7 @@ function draw() {
     ctx.strokeStyle = '#ffd60a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, baseline); ctx.lineTo(width, baseline); ctx.stroke()
     ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.font = 'bold 17px SimSun, serif'; ctx.fillStyle = '#f5f5f7'
     if (s) {
-      const hud = [s.mode === 'debug' ? '免麦克风复习·不限轮' : s.mode === 'review' ? '一键复习·不限轮' : '普通练习', `生命 ${s.lives}`, `第 ${s.round} 轮`, `进度 ${s.processed}/${s.total}`, `速度 ${s.speed.toFixed(1)}x`]
+      const hud = [s.mode === 'debug' ? '免麦克风复习·不限轮' : s.mode === 'review' ? '一键复习·不限轮' : '普通练习', `范围 ${s.selection_scope_label}`, `生命 ${s.lives}`, `第 ${s.round} 轮`, `进度 ${s.processed}/${s.total}`, `速度 ${s.speed.toFixed(1)}x`]
       if (!isReviewMode(s.mode)) hud.push(`本局 ${s.score}`, `总分 ${s.total_score}`)
       ctx.fillText(hud.join('    '), 18, 16)
       if (isReviewMode(s.mode)) {
@@ -326,7 +326,7 @@ onUnmounted(() => {
     <h1 class="sr-only">打字挑战</h1>
     <div ref="stage" class="game-stage">
       <canvas ref="canvas" tabindex="0" aria-label="单词下落游戏区域，使用键盘输入英文" @pointermove="hover" @pointerleave="tooltip = ''" />
-      <div class="sr-only" v-if="state" aria-live="off">{{ state.mode === 'practice' ? '普通练习' : state.mode === 'debug' ? '免麦克风复习' : '一键复习' }}，生命 {{ state.lives }}，第 {{ state.round }} 轮，进度 {{ state.processed }}/{{ state.total }}，本局 {{ state.score }}，总分 {{ state.total_score }}</div>
+      <div class="sr-only" v-if="state" aria-live="off">{{ state.mode === 'practice' ? '普通练习' : state.mode === 'debug' ? '免麦克风复习' : '一键复习' }}，范围 {{ state.selection_scope_label }}，生命 {{ state.lives }}，第 {{ state.round }} 轮，进度 {{ state.processed }}/{{ state.total }}，本局 {{ state.score }}，总分 {{ state.total_score }}</div>
       <p v-show="recording || processing || notice" class="game-message" :class="{ review: isReviewMode(state?.mode) }" aria-live="polite">{{ recording ? '请读出屏幕上的英文单词…' : processing ? '语音识别中' : notice }}</p>
       <p v-if="error" class="game-error" role="alert">{{ error }}</p>
       <div v-if="tooltip" class="game-definition" role="tooltip">{{ tooltip }}</div>

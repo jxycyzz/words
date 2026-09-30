@@ -219,6 +219,12 @@ def create_app(data_dir=None, testing=False, services=None):
         pending=store().conn.execute("SELECT count(*) FROM settlement_events WHERE status IN ('pending','failed')").fetchone()[0]
         return {'enabled':app.state.mail.enabled,'pending_count':pending,'latest':latest[0] if latest else None}
 
+    def active_game_summary(game, owned):
+        result={'id':game.id,'mode':game.mode,'owned':owned}
+        if game.review:
+            result['review_scope']=game.selection_scope
+        return result
+
     def game_for(game_id, owner):
         game = app.state.game
         if not game or game.id!=game_id or game.owner!=owner:
@@ -265,11 +271,13 @@ def create_app(data_dir=None, testing=False, services=None):
                 game.set_mode(payload['mode'])
                 game.refresh_words(words)
             else:
-                game=GameSession(store(),payload['owner'],payload['mode'],words,payload['policy'])
+                game=GameSession(store(),payload['owner'],payload['mode'],words,payload['policy'],
+                                 selection_scope=payload.get('review_scope','all'))
                 game.save()
             retire_other_sessions(store(),game.id,'new_session_selected')
             store().log_operation('no_microphone_review_prepared' if game.mode=='debug' else 'game_prepared',
-                '免麦克风复习已准备：实际打字计入正式记录和奖励' if game.mode=='debug' else 'AI 学习卡检查完成，可以进入游戏',session_id=game.id,word_count=len(words))
+                '免麦克风复习已准备：实际打字计入正式记录和奖励' if game.mode=='debug' else 'AI 学习卡检查完成，可以进入游戏',
+                session_id=game.id,word_count=len(words),review_scope=game.selection_scope)
             if game.review: store().enqueue_job('preheat',{'day':today()})
         app.state.game=game
         return {'id':game.id,'resumed':bool(payload.get('resume_id'))}
@@ -292,9 +300,10 @@ def create_app(data_dir=None, testing=False, services=None):
         resumable = game and game.status in ('running','paused')
         return {'summary':store().summary(),'capabilities':{**app.state.services.capabilities(),'email':app.state.mail.enabled},'mail_status':mail_status(),
             'debug_default':bool(app.state.services.config.get('debug_mode',False)),
+            'review_scopes':store().review_scopes(),
             'policy':ParentSettingsManager(store()).current_policy(),
             'has_parent_password':ParentSettingsManager(store()).has_password(),
-            'active_game':{'id':game.id,'mode':game.mode,'owned':game.owner==request.state.owner} if resumable else None}
+            'active_game':active_game_summary(game,game.owner==request.state.owner) if resumable else None}
 
     @app.post('/api/session/claim')
     async def claim_session(request: Request):
@@ -313,7 +322,7 @@ def create_app(data_dir=None, testing=False, services=None):
             if resumable:
                 retire_other_sessions(store(),game.id,'current_page_claimed_session')
             claim_prepare_jobs(store(),request.state.owner)
-        return {'transferred':transferred,'active_game':{'id':game.id,'mode':game.mode,'owned':True} if resumable else None}
+        return {'transferred':transferred,'active_game':active_game_summary(game,True) if resumable else None}
 
     @app.post('/api/presence')
     async def presence(body: StrictModel):
@@ -420,15 +429,24 @@ def create_app(data_dir=None, testing=False, services=None):
         existing = app.state.game
         resume_id=None
         daily_mode = body.mode in ('review','debug')
+        requested_scope = body.review_scope if daily_mode else 'selected'
         if existing and existing.status in ('paused','running') and existing.day==today():
             if existing.owner!=request.state.owner:
                 await transfer_game(existing,request.state.owner)
             if existing.connected:
                 raise HTTPException(409,'游戏页面已经打开，请返回已有页面')
-            if existing.mode==body.mode or (daily_mode and existing.mode in ('review','debug')): resume_id=existing.id
+            same_scope=existing.selection_scope==requested_scope
+            if same_scope and (existing.mode==body.mode or (daily_mode and existing.mode in ('review','debug'))):
+                resume_id=existing.id
         if not resume_id:
             if daily_mode:
-                rows=store().rows("SELECT * FROM sessions WHERE status='paused' AND mode IN ('review','debug') AND day=? ORDER BY updated_at DESC LIMIT 1",(today(),))
+                candidates=store().rows("SELECT * FROM sessions WHERE status='paused' AND mode IN ('review','debug') AND day=? ORDER BY updated_at DESC",(today(),))
+                rows=[]
+                for candidate in candidates:
+                    saved=json.loads(candidate['payload'])
+                    if saved.get('selection_scope','all')==requested_scope:
+                        rows=[candidate]
+                        break
             else:
                 rows=store().rows("SELECT * FROM sessions WHERE status='paused' AND mode=? AND day=? ORDER BY updated_at DESC LIMIT 1",(body.mode,today()))
             if rows:
@@ -447,7 +465,7 @@ def create_app(data_dir=None, testing=False, services=None):
             if daily_mode:
                 if body.mode=='review' and not app.state.services.configured('asr'):
                     raise ValueError('一键复习需要语音锁定，请先配置 bs-web/config.json 的 ASR 服务；目前可以使用普通练习')
-                daily = store().prepare_daily(policy)
+                daily = store().prepare_daily(policy,requested_scope)
                 policy = daily['policy']
                 if daily['elapsed']>=1800:
                     raise ValueError('今日一键复习 30 分钟已用完')
@@ -463,7 +481,7 @@ def create_app(data_dir=None, testing=False, services=None):
             if any(w['archived'] for w in words):
                 raise ValueError('所选词条已归档，请刷新词库')
             payload={'owner':request.state.owner,'mode':body.mode,'day':today(),
-                'word_ids':ids,'policy':policy,'resume_id':resume_id}
+                'word_ids':ids,'policy':policy,'resume_id':resume_id,'review_scope':requested_scope}
             job_id=store().enqueue_job('prepare_game',payload)
         return {'job_id':job_id,'preparing':True}
 

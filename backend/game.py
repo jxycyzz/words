@@ -33,8 +33,9 @@ class GameSession:
             self.__dict__.update(before)
             raise
 
-    def __init__(self, store, owner, mode, words, policy, clock=time.monotonic):
+    def __init__(self, store, owner, mode, words, policy, clock=time.monotonic, selection_scope='all'):
         self.store, self.owner, self.mode, self.policy = store, owner, mode, policy
+        self.selection_scope = selection_scope if mode in ('review','debug') else 'selected'
         self.clock = clock
         self.id, self.day = secrets.token_urlsafe(24), today()
         self.words = [PracticeWord(id=w['id'], prompt=w['translation'] or w.get('phonetic') or w['word'], answer=w['word']) for w in words]
@@ -370,7 +371,7 @@ class GameSession:
     def settlement(self, trigger):
         if not self.review:
             return
-        payload = self.store.settlement_payload(self.day,self.id,self.history_baseline,trigger)
+        payload = self.store.settlement_payload(self.day,self.id,self.history_baseline,trigger,self.selection_scope)
         self.store.conn.execute('''INSERT OR IGNORE INTO settlement_events(session_id,close_number,day,payload,created_at)
             VALUES(?,?,?,?,?)''',(self.id,self.close_number,self.day,encoded(payload),timestamp()))
 
@@ -407,6 +408,7 @@ class GameSession:
             'reservations':self.reservations,'preview_points':self.preview_points(),'reward_slot':self.reward_slot(),
             'terminal_reason':self.terminal_reason,
             'history_baseline':self.history_baseline,'window_closed':self.window_closed,
+            'selection_scope':self.selection_scope,
             'random_state':self.state.random.getstate()}
         self.store.conn.execute('''INSERT INTO sessions VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             owner=excluded.owner,mode=excluded.mode,status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at''',
@@ -417,7 +419,8 @@ class GameSession:
     def restore(cls, store, row, clock=time.monotonic):
         p = json.loads(row['payload'])
         words = [{'id':w['id'],'word':w['answer'],'translation':w['prompt']} for w in p['words']]
-        instance = cls(store,row['owner'],row['mode'],words,p['policy'],clock)
+        instance = cls(store,row['owner'],row['mode'],words,p['policy'],clock,
+                       p.get('selection_scope','all' if row['mode'] in ('review','debug') else 'selected'))
         instance.id, instance.day = row['id'],row['day']
         instance.status = 'paused'
         instance.state.load_snapshot(p['state'],clock())
@@ -449,7 +452,9 @@ class GameSession:
         saved = sum(r['reward_points'] for r in rounds.values())
         improvement = max(self.preview_points()-rounds.get(self.reward_slot(),{}).get('reward_points',0),0)
         daily = self.store.daily(self.day) if self.review else None
-        return {'id':self.id,'mode':self.mode,'voice_required':self.voice_required,'status':self.status,'day':self.day,'last_seq':self.seq,
+        return {'id':self.id,'mode':self.mode,'selection_scope':self.selection_scope,
+            'selection_scope_label':{'all':'全部词库','grade8_upper':'初二上','selected':'已选单词'}.get(self.selection_scope,self.selection_scope),
+            'voice_required':self.voice_required,'status':self.status,'day':self.day,'last_seq':self.seq,
             'round':self.state.current_round,'round_limit':None if self.unlimited_rounds else self.policy['round_count'] if self.review else None,
             'lives':self.state.lives,'score':self.state.score,'speed':self.state.speed_multiplier,
             'processed':self.state.round_processed_words,'total':self.state.round_total_words,

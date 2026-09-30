@@ -8,9 +8,10 @@ import { useWordLookup } from './useWordLookup'
 const words = ref<Word[]>([]), boot = ref<any>(null), selected = ref(new Set<number>()), focused = ref<number | null>(null)
 const wordCache = reactive(new Map<number, Word>())
 const search = ref(''), start = ref(localDate(-6)), end = ref(localDate()), busy = ref(false), status = ref('就绪'), error = ref('')
-const form = reactive({ word: '', translation: '', phonetic: '', created_on: localDate() })
+const form = reactive({ word: '', translation: '', phonetic: '', created_on: localDate(), tags: [] as string[] })
 const editId = ref<number | null>(null), gameId = ref(''), modal = ref('')
 const debugMode = ref(false)
+const reviewScope = ref<'all' | 'grade8_upper'>('all')
 let debugLoaded = false
 function saveDebugPreference() { localStorage.setItem('wordlearner-debug-mode', String(debugMode.value)) }
 const { lookup, loading: lookupLoading, cancel: cancelLookup } = useWordLookup(form, editId, status, error)
@@ -20,7 +21,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.12')
+const updated = ref(false), version = ref('0.2.13')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -79,7 +80,8 @@ async function claimCurrentPage() {
 }
 function toggle(id: number) { const next = new Set(selected.value); next.has(id) ? next.delete(id) : next.add(id); selected.value = next }
 function chooseAll() { selected.value = new Set([...selected.value, ...words.value.map(w => w.id)]) }
-function clearForm() { Object.assign(form, { word: '', translation: '', phonetic: '', created_on: boot.value?.summary.today || localDate() }); editId.value = null }
+function clearForm() { Object.assign(form, { word: '', translation: '', phonetic: '', created_on: boot.value?.summary.today || localDate(), tags: [] }); editId.value = null }
+function toggleGradeTag(checked: boolean) { form.tags = checked ? ['grade8_upper'] : [] }
 async function save() {
   await run(async () => {
     if (!form.word.trim()) throw new Error('请输入英文单词或短语')
@@ -95,7 +97,7 @@ async function save() {
 function edit(word = current.value) {
   if (selected.value.size > 1 && word === current.value) { error.value = '编辑时请只选择一个词条'; return }
   if (!word) { error.value = '请先选择一个词条'; return }
-  editId.value = word.id; Object.assign(form, { word: word.word, translation: word.translation, phonetic: word.phonetic, created_on: word.created_on })
+  editId.value = word.id; Object.assign(form, { word: word.word, translation: word.translation, phonetic: word.phonetic, created_on: word.created_on, tags: [...word.tags] })
   document.getElementById('word-input')?.focus()
 }
 function speak(value = form.word) {
@@ -108,9 +110,10 @@ async function archive() {
   if (!confirm(`确认从词库移除 ${ids.value.length} 个词条？已有学习历史将保留。`)) return
   await run(async () => { await api('/words/archive', { method: 'POST', body: JSON.stringify({ ids: ids.value }) }); selected.value = new Set(); focused.value = null; await refresh(); status.value = '词条已归档，历史记录已保留' })
 }
-async function startGame(mode: 'practice' | 'review' | 'debug') {
+async function startGame(mode: 'practice' | 'review' | 'debug', scope = reviewScope.value) {
   await run(async () => {
-    const result = await api('/games', { method: 'POST', body: JSON.stringify({ mode: debugMode.value ? 'debug' : mode, word_ids: [...selected.value] }) })
+    const actualMode = debugMode.value ? 'debug' : mode
+    const result = await api('/games', { method: 'POST', body: JSON.stringify({ mode: actualMode, word_ids: [...selected.value], review_scope: scope }) })
     try { gameId.value = result.id || (await waitJob(result.job_id, true)).id } finally { jobProgress.value = '' }
   })
 }
@@ -180,6 +183,8 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
         <label for="translation-input">释义</label><input id="translation-input" v-model="form.translation" maxlength="1000" placeholder="中文释义" />
         <label for="phonetic-input">音标</label><input id="phonetic-input" v-model="form.phonetic" maxlength="200" placeholder="/ fəˈnetɪk /" />
         <label for="date-input">日期</label><input id="date-input" v-model="form.created_on" type="date" required />
+        <label class="tag-field"><input type="checkbox" :checked="form.tags.includes('grade8_upper')" @change="toggleGradeTag(($event.target as HTMLInputElement).checked)" /> 分类：初二上</label>
+        <label class="review-scope">一键复习范围<select v-model="reviewScope"><option v-for="scope in boot?.review_scopes || [{ key: 'all', label: '全部词库', count: 0 }]" :key="scope.key" :value="scope.key" :disabled="scope.key !== 'all' && !scope.count">{{ scope.label }}（{{ scope.count }}词）</option></select></label>
         <div class="button-grid">
           <button type="button" :disabled="busy || lookupLoading" @click="lookup(true)">{{ lookupLoading ? '查询中…' : '查询' }}</button><button class="primary" :disabled="busy">{{ editId ? '保存修改' : '保存' }}</button>
           <button type="button" @click="speak()">发音</button><button type="button" class="primary" :disabled="busy" @click="startGame('practice')">开始练习</button>
@@ -203,14 +208,14 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
         <template v-else>结算已保存，邮件需要检查：{{ boot.mail_status.latest.last_error || boot.mail_status.latest.status }}。请查看操作日志。</template>
       </div>
       <div v-if="updated" class="resume-banner"><span>服务器已更新，刷新页面即可使用新版本。</span><button @click="applyUpdate">刷新版本</button></div>
-      <div v-if="boot?.active_game" class="resume-banner"><div><strong>有一场尚未完成的{{ boot.active_game.mode === 'practice' ? '练习' : boot.active_game.mode === 'debug' ? '免麦克风复习' : '复习' }}</strong><p>已保存轮次、活动词和实际学习进度。</p></div><button class="primary" :disabled="!boot.active_game.owned" @click="startGame(boot.active_game.mode)">{{ boot.active_game.owned ? '恢复进度' : '请在原浏览器继续' }}</button></div>
+      <div v-if="boot?.active_game" class="resume-banner"><div><strong>有一场尚未完成的{{ boot.active_game.mode === 'practice' ? '练习' : boot.active_game.mode === 'debug' ? '免麦克风复习' : '复习' }}</strong><p>范围：{{ boot.active_game.mode === 'practice' ? '已选单词' : boot.active_game.review_scope === 'grade8_upper' ? '初二上' : '全部词库' }}；已保存轮次、活动词和实际学习进度。</p></div><button class="primary" :disabled="!boot.active_game.owned" @click="startGame(boot.active_game.mode, boot.active_game.review_scope || 'all')">{{ boot.active_game.owned ? '恢复进度' : '请在原浏览器继续' }}</button></div>
       <div v-for="(warning, index) in entryWarnings" :key="warning" class="alert error" role="alert">{{ warning }}<button class="text-button" @click="entryWarnings.splice(index, 1)">关闭</button></div>
       <div v-if="error && !modal" class="alert error" role="alert">{{ error }}<button class="text-button" @click="error = ''">关闭</button></div>
       <form class="filters" @submit.prevent="run(loadWords)"><label class="search-filter">搜索<input v-model="search" placeholder="单词或释义" /></label><label>开始<input v-model="start" type="date" /></label><label>结束<input v-model="end" type="date" /></label><button :disabled="busy">筛选</button><button type="button" @click="search = ''; start = localDate(-6); end = localDate(); run(loadWords)">重置</button></form>
       <div class="toolbar"><button @click="chooseAll">全选可见</button><button @click="selected = new Set()">取消选择</button><span class="toolbar-divider" /><button @click="edit()">编辑</button><button class="danger" @click="archive">删除</button><button class="primary" :disabled="busy" @click="startGame('review')">一键复习</button><button @click="openReport">每日报告</button><button @click="openLogs">操作日志</button><button @click="run(refresh)">刷新</button></div>
       <div class="table-topline"><span>显示 {{ words.length }} 个词条<span v-if="selected.size"> · 已选 {{ selected.size }} 个</span></span><div><button class="text-button" @click="batchCards">批量学习卡</button><span>·</span><button class="text-button" @click="openAI()">AI 助教</button></div></div>
-      <div class="table-container"><table class="word-table"><thead><tr><th class="check-column"><span class="sr-only">选择</span></th><th>日期</th><th>单词</th><th>音标</th><th>释义</th><th>练习</th><th>正确率</th><th>掌握度</th><th>下次复习</th></tr></thead>
-        <tbody><tr v-for="word in words" :key="word.id" :class="{ selected: selected.has(word.id), focused: focused === word.id }" tabindex="0" @click="focused = word.id" @keydown.space.prevent="toggle(word.id)" @dblclick="edit(word)"><td><input type="checkbox" :aria-label="`选择 ${word.word}`" :checked="selected.has(word.id)" @click.stop @change="toggle(word.id)" /></td><td class="date-cell">{{ word.created_on }}</td><td class="word-cell">{{ word.word }}</td><td class="phonetic-cell">{{ word.phonetic || '—' }}</td><td class="translation-cell" :title="word.translation">{{ word.translation || '—' }}</td><td>{{ word.practice_count }}</td><td>{{ word.accuracy }}%</td><td><span class="mastery-value">{{ word.mastery }}%</span><div class="mastery-track"><i :style="{ width: word.mastery + '%' }" /></div></td><td class="date-cell">{{ word.due_on }}</td></tr></tbody>
+      <div class="table-container"><table class="word-table"><thead><tr><th class="check-column"><span class="sr-only">选择</span></th><th>日期</th><th>单词</th><th>分类</th><th>音标</th><th>释义</th><th>练习</th><th>正确率</th><th>掌握度</th><th>下次复习</th></tr></thead>
+        <tbody><tr v-for="word in words" :key="word.id" :class="{ selected: selected.has(word.id), focused: focused === word.id }" tabindex="0" @click="focused = word.id" @keydown.space.prevent="toggle(word.id)" @dblclick="edit(word)"><td><input type="checkbox" :aria-label="`选择 ${word.word}`" :checked="selected.has(word.id)" @click.stop @change="toggle(word.id)" /></td><td class="date-cell">{{ word.created_on }}</td><td class="word-cell">{{ word.word }}</td><td><span v-for="label in word.tag_labels" :key="label" class="tag-badge">{{ label }}</span><span v-if="!word.tag_labels.length">—</span></td><td class="phonetic-cell">{{ word.phonetic || '—' }}</td><td class="translation-cell" :title="word.translation">{{ word.translation || '—' }}</td><td>{{ word.practice_count }}</td><td>{{ word.accuracy }}%</td><td><span class="mastery-value">{{ word.mastery }}%</span><div class="mastery-track"><i :style="{ width: word.mastery + '%' }" /></div></td><td class="date-cell">{{ word.due_on }}</td></tr></tbody>
       </table><div v-if="!words.length" class="empty-state"><div class="empty-icon">Aa</div><h3>{{ boot?.summary.word_count ? '没有符合条件的词条' : '从第一个单词开始' }}</h3><p>{{ boot?.summary.word_count ? '调整搜索条件或日期范围，查看其他单词。' : '在左侧录入英文、释义和音标，保存后即可开始练习。' }}</p><button v-if="boot?.summary.word_count" @click="search = ''; start = ''; end = ''; run(loadWords)">查看全部词条</button><label v-else for="word-input" class="text-button">录入第一个单词 →</label></div></div>
       <footer class="workspace-footer"><span>勾选单词开始练习，双击词条编辑</span><span>学习记录自动保存</span></footer>
     </main>
@@ -229,7 +234,7 @@ onUnmounted(() => { disposed = true; clearInterval(presenceTimer); clearInterval
     <p v-if="report?.mastery_summary" class="muted">正确率 {{ reportCounts.practiced ? Math.round(report.daily.reduce((n: number, d: any) => n + d.correct, 0) / reportCounts.practiced * 100) : 0 }}% · 到期 {{ report.mastery_summary.due }} · 高掌握 {{ report.mastery_summary.high }} · 中等 {{ report.mastery_summary.medium }} · 薄弱 {{ report.mastery_summary.low }} · 新词 {{ report.mastery_summary.new }}</p>
     <div class="retention"><span>记忆保持趋势 <small>根据当前学习状态估算</small></span><svg viewBox="0 0 920 180" role="img" aria-label="未来30天记忆保持趋势"><line x1="40" y1="145" x2="890" y2="145" stroke="#d2d2d7" /><line x1="40" y1="35" x2="890" y2="35" stroke="#ececf0" stroke-dasharray="4" /><text x="0" y="40">100%</text><text x="10" y="149">0%</text><polyline :points="curve" fill="none" stroke="#0071e3" stroke-width="2.5" /><text x="40" y="172">今天</text><text x="445" y="172">15 天后</text><text x="835" y="172">30 天后</text></svg></div>
     <div class="tabs"><button v-for="tab in [{ id: 'daily', label: '每日统计' }, { id: 'history', label: '历史记录' }, { id: 'mastery', label: '掌握程度' }, { id: 'ai', label: 'AI 总结' }]" :key="tab.id" :class="{ active: reportTab === tab.id }" @click="reportTab = tab.id">{{ tab.label }}</button></div>
-    <div class="report-table" v-if="reportTab === 'daily'"><table><thead><tr><th>日期</th><th>一键清单</th><th>练习次数</th><th>不重复单词</th><th>正确</th><th>正确率</th><th>奖励金</th><th>奖励轮次</th></tr></thead><tbody><tr v-for="row in report?.daily" :key="row.day"><td>{{ row.day }}</td><td>{{ row.review_count }} 词（新 {{ row.required_count }} / 旧 {{ row.old_count }}）</td><td>{{ row.practiced }}</td><td>{{ row.unique_words }}</td><td>{{ row.correct }}</td><td>{{ row.accuracy }}%</td><td>¥{{ row.reward_money.toFixed(2) }} / {{ row.review_policy ? '¥' + row.review_policy.perfect_reward_money.toFixed(2) : '—' }}</td><td>{{ row.rounds.length }} / {{ row.review_policy?.round_count || '—' }}</td></tr></tbody></table><p v-if="!report?.daily.length" class="empty-small">所选日期暂无学习记录</p></div>
+    <div class="report-table" v-if="reportTab === 'daily'"><table><thead><tr><th>日期</th><th>一键清单</th><th>练习次数</th><th>不重复单词</th><th>正确</th><th>正确率</th><th>奖励金</th><th>奖励轮次</th></tr></thead><tbody><tr v-for="row in report?.daily" :key="row.day"><td>{{ row.day }}</td><td>{{ row.review_count }} 词（新 {{ row.required_count }} / 旧 {{ row.old_count }}）<small v-if="row.review_scopes?.length"> · {{ row.review_scopes.map((scope: any) => `${scope.label} ${scope.count}`).join('、') }}</small></td><td>{{ row.practiced }}</td><td>{{ row.unique_words }}</td><td>{{ row.correct }}</td><td>{{ row.accuracy }}%</td><td>¥{{ row.reward_money.toFixed(2) }} / {{ row.review_policy ? '¥' + row.review_policy.perfect_reward_money.toFixed(2) : '—' }}</td><td>{{ row.rounds.length }} / {{ row.review_policy?.round_count || '—' }}</td></tr></tbody></table><p v-if="!report?.daily.length" class="empty-small">所选日期暂无学习记录</p></div>
     <div class="report-table" v-if="reportTab === 'history'"><table><thead><tr><th>时间</th><th>单词</th><th>释义</th><th>结果</th><th>质量</th><th>间隔</th><th>下次复习</th></tr></thead><tbody><tr v-for="row in report?.history" :key="row.id"><td>{{ row.practiced_at.replace('T', ' ').slice(0, 19) }}</td><td class="word-cell">{{ row.word }}</td><td>{{ row.translation }}</td><td :class="row.correct ? 'success-text' : 'danger-text'">{{ row.correct ? '正确' : '错误' }}</td><td>{{ row.quality }}</td><td>{{ row.interval_days }} 天</td><td>{{ row.due_on }}</td></tr></tbody></table><p v-if="!report?.history.length" class="empty-small">所选日期暂无学习记录</p><p v-if="report?.history_total > 1000" class="muted">显示最近 1,000 条，请缩小日期范围查看更多。</p></div>
     <div class="report-table" v-if="reportTab === 'mastery'"><table><thead><tr><th>单词</th><th>释义</th><th>掌握度</th><th>正确率</th><th>间隔</th><th>下次复习</th></tr></thead><tbody><tr v-for="row in report?.mastery" :key="row.id"><td class="word-cell">{{ row.word }} <small v-if="row.archived">已归档</small></td><td>{{ row.translation }}</td><td>{{ row.mastery }}%</td><td>{{ row.accuracy }}%</td><td>{{ row.interval_days }} 天</td><td>{{ row.due_on }}</td></tr></tbody></table></div>
     <div v-if="reportTab === 'ai'" class="ai-report"><button class="primary" :disabled="aiBusy" @click="generate('report')">{{ aiBusy ? '正在生成…' : '生成 AI 总结' }}</button><pre class="ai-output">{{ reportAI || '根据所选日期范围的真实学习记录，生成学习建议。' }}</pre></div>
