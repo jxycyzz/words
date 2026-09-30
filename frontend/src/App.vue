@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { api, localDate, duration, durationHms, type Word } from './api'
+import { api, downloadFile, localDate, duration, durationHms, type Word } from './api'
 import AppModal from './components/AppModal.vue'
 import GamePanel from './components/GamePanel.vue'
 import { useWordLookup } from './useWordLookup'
@@ -21,7 +21,7 @@ const logStart = ref(localDate(-30)), logEnd = ref(localDate()), logType = ref('
 const logs = ref<any[]>([]), logSearch = ref(''), detail = ref(''), settlements = ref<any[]>([])
 const aiText = ref(''), aiQuestion = ref(''), aiBusy = ref(false), aiCached = ref(false), aiTitle = ref('AI 助教'), aiWord = ref<Word | null>(null)
 const reportAI = ref(''), jobProgress = ref(''), entryWarnings = ref<string[]>([])
-const updated = ref(false), version = ref('0.2.14')
+const updated = ref(false), version = ref('0.2.15')
 let presenceTimer = 0, versionTimer = 0, disposed = false, initialBuild = ''
 async function checkVersion() {
   try { const health = await api('/health'); version.value = health.version; if (!initialBuild) initialBuild = health.build_id; else updated.value = initialBuild !== health.build_id } catch { /* Retry when the server returns. */ }
@@ -135,7 +135,18 @@ async function startGame(mode: 'practice' | 'review' | 'debug', scope = reviewSc
     } finally { jobProgress.value = '' }
   })
 }
-async function gameClosed() { gameId.value = ''; await run(refresh) }
+async function gameClosed(summary: { mode: string; day: string }) {
+  const closedId=gameId.value
+  let exported='', exportError=''
+  if (closedId && ['review','debug'].includes(summary.mode)) {
+    try { exported=await downloadFile(`/games/${encodeURIComponent(closedId)}/daily-words.xlsx`) }
+    catch (e) { exportError=(e as Error).message }
+  }
+  gameId.value = ''
+  await run(refresh)
+  if (exported) status.value=`已自动下载 ${exported}；浏览器下载位置设为 D:\\ 后会保存到 D 盘根目录`
+  if (exportError) error.value=`复习进度已保存，但 Excel 下载失败：${exportError}`
+}
 function gameRevoked() {
   gameId.value = ''
   if (boot.value) boot.value.active_game = null

@@ -10,10 +10,10 @@ import time
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -24,6 +24,7 @@ from .game import GameSession
 from .integrations import Integrations
 from .jobs import JobWorker
 from .mail import MailWorker
+from .review_export import daily_words_workbook
 from .schemas import AIInput, Command, PasswordInput, PolicyInput, StartGame, WordIds, WordInput, StrictModel
 from .store import Store,encoded
 from .version import VERSION,build_id
@@ -488,6 +489,28 @@ def create_app(data_dir=None, testing=False, services=None):
     @app.get('/api/games/{game_id}')
     async def get_game(game_id: str,request: Request):
         return game_for(game_id,request.state.owner).view()
+
+    @app.get('/api/games/{game_id}/daily-words.xlsx')
+    async def export_daily_words(game_id: str,request: Request):
+        rows=store().rows('SELECT * FROM sessions WHERE id=? AND owner=?',(game_id,request.state.owner))
+        if not rows:
+            raise HTTPException(404,'游戏会话不存在或不属于当前浏览器')
+        session=rows[0]
+        if session['mode'] not in ('review','debug'):
+            raise ValueError('只有一键复习会生成当天单词记录')
+        payload=json.loads(session['payload'])
+        words=[]
+        for snapshot in payload.get('words',[]):
+            current=store().get_word(int(snapshot['id']))
+            words.append({**current,'word':snapshot.get('answer') or current['word'],
+                          'translation':current['translation'] or snapshot.get('prompt') or ''})
+        scope={'all':'全部词库','grade8_upper':'初二上'}.get(payload.get('selection_scope'),'全部词库')
+        content=daily_words_workbook(words,session['day'],scope)
+        filename=f'当天单词记录{session["day"].replace("-","")}.xlsx'
+        return Response(content,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={
+            'Content-Disposition':f"attachment; filename=daily-words-{session['day'].replace('-','')}.xlsx; filename*=UTF-8''{quote(filename)}",
+            'X-WordLearner-Filename':quote(filename),
+        })
 
     @app.post('/api/games/{game_id}/voice')
     async def voice(game_id: str,request: Request):

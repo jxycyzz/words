@@ -23,6 +23,25 @@ export function duration(seconds: number) {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
+export async function downloadFile(path: string): Promise<string> {
+  const response = await fetch('/api' + path, {
+    credentials: 'same-origin',
+    headers: { 'X-WordLearner-Request': '1', 'X-WordLearner-Page': pageId },
+  })
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}))
+    throw new Error(typeof result.detail === 'string' ? result.detail : '文件生成失败，请稍后重试')
+  }
+  const encodedName = response.headers.get('X-WordLearner-Filename') || ''
+  const filename = encodedName ? decodeURIComponent(encodedName) : '当天单词记录.xlsx'
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url; link.download = filename
+  document.body.appendChild(link); link.click(); link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return filename
+}
+
 export function durationHms(seconds: number) {
   const s = Math.floor(seconds || 0)
   const hours = Math.floor(s / 3600)

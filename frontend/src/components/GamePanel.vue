@@ -5,7 +5,7 @@ import { Recorder, listAudioInputs, type AudioInputOption, type CaptureProgress 
 import { wordLayouts, fitText, type WordLayout } from '../gameLayout'
 
 const props = defineProps<{ id: string; asr: boolean }>()
-const emit = defineEmits<{ close: []; revoked: [] }>()
+const emit = defineEmits<{ close: [summary: { mode: string; day: string }]; revoked: [] }>()
 const state = ref<GameView | null>(null), canvas = ref<HTMLCanvasElement>(), stage = ref<HTMLDivElement>()
 const notice = ref(''), tooltip = ref('')
 let noticeTimer = 0, lastNotice = '', layout: WordLayout[] = [], width = 980, height = 630
@@ -62,7 +62,7 @@ function connect() {
         if (position) beams.push({ at: performance.now(), ...position })
       }
       inflight = null; sendNext()
-      if (justClosed && closing) emit('close')
+      if (justClosed && closing) emit('close', { mode: state.value?.mode || '', day: state.value?.day || '' })
     } else if (msg.type === 'error') {
       const failedCommand = inflight?.type
       error.value = msg.message; sequence = msg.seq; inflight = null; queue = []; closing = false
@@ -231,7 +231,7 @@ function blur() {
 function visibility() { if (document.hidden) { blur(); socket?.close() } }
 function devicesChanged() { void refreshAudioInputs() }
 function close() {
-  if (!connected.value || ['completed', 'closed'].includes(state.value?.status || '')) { emit('close'); return }
+  if (!connected.value || ['completed', 'closed'].includes(state.value?.status || '')) { emit('close', { mode: state.value?.mode || '', day: state.value?.day || '' }); return }
   if (isReviewMode(state.value?.mode) && !confirm('退出将保存进度，并按原规则记一次本轮重试。确认退出？')) return
   blur(); closing = true; command({ type: 'close' })
 }

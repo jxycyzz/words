@@ -1,10 +1,12 @@
 import json
 import io
+import sqlite3
 import time
 import wave
 from datetime import date, timedelta
 
 import pytest
+from openpyxl import load_workbook
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -303,6 +305,41 @@ def test_game_session_owner_and_input_contract(client):
     assert client.get(f'/api/games/{game_id}').status_code==404
     takeover=client.post('/api/games',json={'mode':'practice','word_ids':[w['id']]})
     assert takeover.status_code==200 and takeover.json()['preparing'] is True
+
+
+def test_review_session_exports_its_exact_word_snapshot_as_xlsx(client):
+    client.app.state.services=FakeServices()
+    client.app.state.jobs.services=client.app.state.services
+    for index in range(75):
+        api_word(client,f'export-word-{index:02}')
+
+    created=client.post('/api/games',json={'mode':'debug','review_scope':'all'}).json()
+    for _ in range(200):
+        job=client.get(f"/api/jobs/{created['job_id']}").json()
+        if job['status'] in ('completed','failed'): break
+        time.sleep(.02)
+    assert job['status']=='completed',job
+
+    game_id=job['result']['id']
+    response=client.get(f'/api/games/{game_id}/daily-words.xlsx')
+
+    assert response.status_code==200,response.text
+    assert response.headers['content-type']=='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    assert response.headers['x-wordlearner-filename']==f'%E5%BD%93%E5%A4%A9%E5%8D%95%E8%AF%8D%E8%AE%B0%E5%BD%95{today().replace("-","")}.xlsx'
+    sheet=load_workbook(io.BytesIO(response.content)).active
+    with sqlite3.connect(client.app.state.store.path) as database:
+        payload=database.execute('SELECT payload FROM sessions WHERE id=?',(game_id,)).fetchone()[0]
+    expected=[word['answer'] for word in json.loads(payload)['words']]
+    assert sheet['G2'].value=='单词数量：75'
+    assert [sheet.cell(row,2).value for row in range(5,80)]==expected
+
+    practice=client.post('/api/games',json={'mode':'practice','word_ids':[1]}).json()
+    for _ in range(200):
+        practice_job=client.get(f"/api/jobs/{practice['job_id']}").json()
+        if practice_job['status'] in ('completed','failed'): break
+        time.sleep(.02)
+    assert practice_job['status']=='completed',practice_job
+    assert client.get(f"/api/games/{practice_job['result']['id']}/daily-words.xlsx").status_code==400
 
 
 def test_voice_api_returns_server_transcript_and_capture_size(client):
