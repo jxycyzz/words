@@ -6,6 +6,7 @@ import math
 import random
 import sqlite3
 import unicodedata
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -491,5 +492,5 @@ class Store:
     def backup(self, destination):
         destination = Path(destination)
         destination.parent.mkdir(parents=True,exist_ok=True)
-        with sqlite3.connect(str(destination)) as target:
+        with closing(sqlite3.connect(str(destination))) as target:
             self.conn.backup(target)

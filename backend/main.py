@@ -34,6 +34,25 @@ COOKIE = 'wordlearner_bs_browser'
 logger = logging.getLogger('wordlearner_bs')
 
 
+def prune_database_backups(folder, keep=1):
+    """Keep only the newest complete SQLite snapshots, regardless of their source."""
+    snapshots=[]
+    for path in folder.glob('*.sqlite3'):
+        try:
+            snapshots.append((path.stat().st_mtime_ns,path.name,path))
+        except FileNotFoundError:
+            pass
+    for _,_,old in sorted(snapshots,reverse=True)[max(int(keep),0):]:
+        for attempt in range(5):
+            try:
+                old.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(.05)
+
+
 def environment_flag(name):
     return os.environ.get(name,'').strip().casefold() in ('1','true','yes','on')
 
@@ -134,9 +153,7 @@ def create_app(data_dir=None, testing=False, services=None):
             def backup():
                 folder=directory/'backups'
                 store.backup(folder/f'web-{time.time_ns()}.sqlite3')
-                # Retention applies only to generated snapshots within this data directory.
-                for old in sorted(folder.glob('web-*.sqlite3'),key=lambda p:p.name,reverse=True)[40:]:
-                    old.unlink()
+                prune_database_backups(folder,keep=1)
             backup()
             rows = store.rows("SELECT * FROM sessions WHERE status IN ('running','paused') ORDER BY updated_at DESC,id DESC LIMIT 1")
             if rows:
