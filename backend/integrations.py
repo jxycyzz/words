@@ -22,6 +22,27 @@ from .clock import today
 from datetime import date, timedelta
 
 
+class _RequestPayloadSession:
+    """Adapt provider-specific request fields without changing shared domain code."""
+
+    def __init__(self, session, *, remove=(), extra=None):
+        self._session = session
+        self._remove = tuple(remove)
+        self._extra = dict(extra or {})
+        self.headers = session.headers
+
+    def post(self, url, **kwargs):
+        payload = dict(kwargs.get('json') or {})
+        for name in self._remove:
+            payload.pop(name, None)
+        payload.update(self._extra)
+        kwargs['json'] = payload
+        return self._session.post(url, **kwargs)
+
+    def close(self):
+        return self._session.close()
+
+
 class Integrations:
     AI_RETRY_ATTEMPTS = 3
 
@@ -56,6 +77,15 @@ class Integrations:
         if kind=='asr' and self._asr_service is not None and self._asr_signature==signature:
             return self._asr_service
         service=(AIService if kind=='ai' else QwenASRService)(base_url=cfg['base_url'],model=cfg['model'],auth_token=cfg['api_key'],timeout=120 if kind=='ai' else 30)
+        if kind=='ai' and (str(cfg['model']).casefold().startswith('deepseek-') or 'api.deepseek.com' in str(cfg['base_url']).casefold()):
+            # DeepSeek enables high-effort thinking by default. Learning-card
+            # requests need the final answer promptly, so use its documented
+            # provider field instead of Qwen's chat_template_kwargs option.
+            service._session = _RequestPayloadSession(
+                service.session,
+                remove=('chat_template_kwargs',),
+                extra={'thinking': {'type': 'disabled'}},
+            )
         service.session.headers.update({'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/139.0 Safari/537.36','Accept':'application/json'})
         if kind=='asr':
             self._asr_service,self._asr_signature=service,signature
